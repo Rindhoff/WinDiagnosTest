@@ -121,25 +121,25 @@ if ($os) {
 }
 
 func calculateOverallScoreAndIssues(r *models.HealthReport) {
-	// Weights including BootLogon
+	// Weights balanced for realistic assessment
 	hwWeight := 0.15
-	logWeight := 0.15
+	logWeight := 0.10
 	netWeight := 0.15
 	secWeight := 0.15
 	bootWeight := 0.15
 	cpWeight := 0.15
+	perfWeight := 0.10
 	integWeight := 0.05
-	perfWeight := 0.05
 
 	// If Check Point is not installed/detected, redistribute its weight
 	if !r.CheckPointVPN.Detected {
 		hwWeight = 0.20
-		logWeight = 0.20
+		logWeight = 0.15
 		netWeight = 0.15
-		secWeight = 0.15
+		secWeight = 0.20
 		bootWeight = 0.15
-		integWeight = 0.10
-		perfWeight = 0.05
+		perfWeight = 0.10
+		integWeight = 0.05
 		cpWeight = 0.0
 	}
 
@@ -202,7 +202,7 @@ func calculateOverallScoreAndIssues(r *models.HealthReport) {
 			FixActionId: "run_sfc_scan",
 		})
 	}
-	if r.EventLogs.CriticalEventCount > 0 {
+	if r.EventLogs.CriticalEventCount >= 2 {
 		r.TopIssues = append(r.TopIssues, models.IssueSummary{
 			Category:    "Eventlogg",
 			Title:       fmt.Sprintf("%d kritiska systemfel de senaste 48h", r.EventLogs.CriticalEventCount),
@@ -220,7 +220,7 @@ func calculateOverallScoreAndIssues(r *models.HealthReport) {
 				Description: "Disken rapporterar risk för haveri! Säkerhetskopiera omedelbart alla viktiga filer.",
 				Severity:    models.SeverityCritical,
 			})
-		} else if d.UsagePct > 90 {
+		} else if d.UsagePct > 92 {
 			r.TopIssues = append(r.TopIssues, models.IssueSummary{
 				Category:    "Lagring",
 				Title:       fmt.Sprintf("Lite ledigt utrymme på enhet %s (%.0f%% använt)", d.DriveLetter, d.UsagePct),
@@ -242,8 +242,9 @@ func calculateOverallScoreAndIssues(r *models.HealthReport) {
 		})
 	}
 
-	// 5. Security Issues
-	if !r.Security.RealtimeProtection {
+	// 5. Security Issues (only confirmed states)
+	isUnreadable := strings.Contains(r.Security.AntivirusName, "Kunde inte")
+	if !r.Security.RealtimeProtection && !isUnreadable {
 		r.TopIssues = append(r.TopIssues, models.IssueSummary{
 			Category:    "Säkerhet",
 			Title:       "Realtidsskydd i Antivirus är inaktiverat",
@@ -251,7 +252,7 @@ func calculateOverallScoreAndIssues(r *models.HealthReport) {
 			Severity:    models.SeverityCritical,
 		})
 	}
-	if !r.Security.FirewallEnabled {
+	if !r.Security.FirewallEnabled && !isUnreadable {
 		r.TopIssues = append(r.TopIssues, models.IssueSummary{
 			Category:    "Säkerhet",
 			Title:       "Windows-brandväggen är avstängd",
@@ -259,7 +260,7 @@ func calculateOverallScoreAndIssues(r *models.HealthReport) {
 			Severity:    models.SeverityWarning,
 		})
 	}
-	if !r.Security.WindowsUpdateServiceOK {
+	if !r.Security.WindowsUpdateServiceOK && !isUnreadable {
 		r.TopIssues = append(r.TopIssues, models.IssueSummary{
 			Category:    "Windows Update",
 			Title:       "Windows Update-tjänsten är inaktiverad",
@@ -270,7 +271,7 @@ func calculateOverallScoreAndIssues(r *models.HealthReport) {
 	}
 
 	// 6. Integrity Issues
-	if r.Integrity.TempFilesSizeBytes > 5*1024*1024*1024 { // >5 GB
+	if r.Integrity.TempFilesSizeBytes > 25*1024*1024*1024 { // >25 GB
 		r.TopIssues = append(r.TopIssues, models.IssueSummary{
 			Category:    "Systemfiler",
 			Title:       fmt.Sprintf("%s temporära filer och cache samlat", r.Integrity.TempFilesSizeDisplay),
@@ -295,11 +296,11 @@ func calculateOverallScoreAndIssues(r *models.HealthReport) {
 				Category:    "Nätverksresurser",
 				Title:       fmt.Sprintf("Onåbar resurs '%s' (%s)", un.Name, un.TargetUNC),
 				Description: un.ImpactDescription,
-				Severity:    models.SeverityCritical,
+				Severity:    models.SeverityWarning,
 			})
 		}
 	}
-	if r.BootLogon.TotalBootDurationSeconds > 45.0 {
+	if r.BootLogon.TotalBootDurationSeconds > 60.0 {
 		r.TopIssues = append(r.TopIssues, models.IssueSummary{
 			Category:    "Uppstartsprestanda",
 			Title:       fmt.Sprintf("Långsam uppstartstid (%.1f sekunder)", r.BootLogon.TotalBootDurationSeconds),
@@ -311,6 +312,13 @@ func calculateOverallScoreAndIssues(r *models.HealthReport) {
 	// Count issues by severity
 	warnCount := 0
 	critCount := 0
+	hasSmartFail := false
+	for _, d := range r.Hardware.Disks {
+		if !d.SmartHealthy {
+			hasSmartFail = true
+		}
+	}
+
 	for _, issue := range r.TopIssues {
 		if issue.Severity == models.SeverityCritical {
 			critCount++
@@ -319,12 +327,14 @@ func calculateOverallScoreAndIssues(r *models.HealthReport) {
 		}
 	}
 
-	// Score Capping for Critical / Severe findings
-	if critCount >= 3 && r.TotalScore > 49 {
-		r.TotalScore = 49
-	} else if critCount > 0 && r.TotalScore > 69 {
-		r.TotalScore = 69
-	} else if warnCount >= 4 && r.TotalScore > 79 {
+	// Score Capping only for verified critical failures
+	if hasSmartFail && r.TotalScore > 45 {
+		r.TotalScore = 45
+	} else if critCount >= 2 && r.TotalScore > 55 {
+		r.TotalScore = 55
+	} else if critCount == 1 && r.TotalScore > 75 {
+		r.TotalScore = 75
+	} else if warnCount >= 5 && r.TotalScore > 79 {
 		r.TotalScore = 79
 	}
 
@@ -339,11 +349,11 @@ func calculateOverallScoreAndIssues(r *models.HealthReport) {
 	if r.TotalScore >= 90 {
 		r.ScoreRating = "Utmärkt skick"
 	} else if r.TotalScore >= 75 {
-		r.ScoreRating = "Gott skick med anmärkningar"
-	} else if r.TotalScore >= 50 {
-		r.ScoreRating = "Varningar kräver åtgärd"
+		r.ScoreRating = "Gott skick"
+	} else if r.TotalScore >= 55 {
+		r.ScoreRating = "Viss tillsyn rekommenderas"
 	} else {
-		r.ScoreRating = "Kritiska problem identifierade"
+		r.ScoreRating = "Åtgärd rekommenderas"
 	}
 
 	r.SummaryBadges["OK"] = countPassingChecks(r)

@@ -180,12 +180,46 @@ func saveWPRState(state WPRStateMeta) error {
 	return os.WriteFile(path, data, 0600)
 }
 
+func cleanTimingItemName(name string) string {
+	name = strings.TrimSpace(name)
+	fields := strings.Fields(name)
+	for _, f := range fields {
+		lower := strings.ToLower(f)
+		if strings.HasSuffix(lower, ".exe") || strings.HasSuffix(lower, ".sys") || strings.HasSuffix(lower, ".dll") {
+			return f
+		}
+	}
+	if len(fields) > 1 && len(fields[0]) <= 2 {
+		return strings.Join(fields[1:], " ")
+	}
+	return name
+}
+
+func cleanTimingDescription(desc string, durationMs int, category string) string {
+	if durationMs > 0 {
+		cat := category
+		if cat == "" {
+			cat = "Komponent"
+		}
+		return fmt.Sprintf("%s initierades på %d ms vid uppstart.", cat, durationMs)
+	}
+	return desc
+}
+
 func loadTraceSummary() (BootTraceSummaryMeta, bool) {
 	var sum BootTraceSummaryMeta
 	path := getTraceSummaryFilePath()
 	data, err := os.ReadFile(path)
 	if err == nil && len(data) > 0 {
 		if err := json.Unmarshal(data, &sum); err == nil {
+			for i := range sum.SlowestDrivers {
+				sum.SlowestDrivers[i].Name = cleanTimingItemName(sum.SlowestDrivers[i].Name)
+				sum.SlowestDrivers[i].Description = cleanTimingDescription(sum.SlowestDrivers[i].Description, sum.SlowestDrivers[i].DurationMs, "Drivrutin")
+			}
+			for i := range sum.SlowestServices {
+				sum.SlowestServices[i].Name = cleanTimingItemName(sum.SlowestServices[i].Name)
+				sum.SlowestServices[i].Description = cleanTimingDescription(sum.SlowestServices[i].Description, sum.SlowestServices[i].DurationMs, "Tjänst")
+			}
 			return sum, true
 		}
 	}
@@ -1011,13 +1045,16 @@ try {
     if ($degEvents) {
         foreach ($e in $degEvents) {
             [xml]$xml = $e.ToXml()
-            $nameVal = ($xml.Event.EventData.Data | Where-Object { $_.Name -match 'Name' }).'#text'
-            $timeVal = ($xml.Event.EventData.Data | Where-Object { $_.Name -match 'TotalTime' }).'#text'
-            $pathVal = ($xml.Event.EventData.Data | Where-Object { $_.Name -match 'Path' }).'#text'
+            $nameItem = $xml.Event.EventData.Data | Where-Object { $_.Name -in @('DriverFriendlyName','DriverName','ServiceName','ServiceFriendlyName','FriendlyName','ProcessName','Name','AppName') -and $_.'#text' } | Select-Object -First 1
+            $nameVal = if ($nameItem) { [string]$nameItem.'#text' } else { "" }
+            $timeItem = $xml.Event.EventData.Data | Where-Object { $_.Name -in @('TotalTime','DriverTotalTime','ServiceTotalTime') -and $_.'#text' } | Select-Object -First 1
+            $timeVal = if ($timeItem) { [string]$timeItem.'#text' } else { "" }
+            $pathItem = $xml.Event.EventData.Data | Where-Object { $_.Name -in @('Path','DriverPath','ServicePath','FilePath') -and $_.'#text' } | Select-Object -First 1
+            $pathVal = if ($pathItem) { [string]$pathItem.'#text' } else { "" }
             
             if ($nameVal -and $timeVal) {
                 $ms = [int]$timeVal
-                if ($e.Id -eq 101) {
+                if ($e.Id -eq 102) {
                     $drvList += [PSCustomObject]@{
                         name = $nameVal
                         category = "Drivrutin"
@@ -1027,7 +1064,7 @@ try {
                         description = "Drivrutin initierades på $ms ms vid uppstart."
                         source = "Diagnostics-Performance Event Log"
                     }
-                } elseif ($e.Id -eq 102) {
+                } elseif ($e.Id -eq 103) {
                     $srvList += [PSCustomObject]@{
                         name = $nameVal
                         category = "Tjänst"
@@ -1035,6 +1072,16 @@ try {
                         duration_sec = [math]::Round($ms / 1000, 2)
                         path = [string]$pathVal
                         description = "Tjänst startades på $ms ms vid uppstart."
+                        source = "Diagnostics-Performance Event Log"
+                    }
+                } elseif ($e.Id -eq 101) {
+                    $srvList += [PSCustomObject]@{
+                        name = $nameVal
+                        category = "Program"
+                        duration_ms = $ms
+                        duration_sec = [math]::Round($ms / 1000, 2)
+                        path = [string]$pathVal
+                        description = "Program initierades på $ms ms vid uppstart."
                         source = "Diagnostics-Performance Event Log"
                     }
                 }

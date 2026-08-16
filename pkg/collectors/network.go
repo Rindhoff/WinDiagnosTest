@@ -68,17 +68,38 @@ func CollectNetworkDiagnostics() models.NetworkReport {
 	}
 
 	// 2. Query Windows Network Adapters and IP Configuration
-	psScript := `$adapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -or $_.Status -eq '1' } | ForEach-Object {
-    $ipConfig = Get-NetIPAddress -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
-    $gw = Get-NetRoute -InterfaceIndex $_.InterfaceIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1 NextHop
-    [PSCustomObject]@{
-        Name = $_.Name
-        Description = $_.InterfaceDescription
-        Status = $_.Status
-        MAC = $_.MacAddress
-        LinkSpeed = $_.LinkSpeed
-        IPv4 = if ($ipConfig) { $ipConfig.IPAddress } else { "" }
-        Gateway = if ($gw) { $gw.NextHop } else { "" }
+	psScript := `$adapters = @()
+$netAdapters = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -or $_.Status -eq '1' }
+if ($netAdapters) {
+    foreach ($a in $netAdapters) {
+        $ipConfig = Get-NetIPAddress -InterfaceIndex $a.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
+        $gw = Get-NetRoute -InterfaceIndex $a.InterfaceIndex -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1 NextHop
+        $adapters += [PSCustomObject]@{
+            Name = $a.Name
+            Description = $a.InterfaceDescription
+            Status = $a.Status
+            MAC = $a.MacAddress
+            LinkSpeed = $a.LinkSpeed
+            IPv4 = if ($ipConfig) { $ipConfig.IPAddress } else { "" }
+            Gateway = if ($gw) { $gw.NextHop } else { "" }
+        }
+    }
+} else {
+    $cimAdapters = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' -ErrorAction SilentlyContinue
+    if ($cimAdapters) {
+        foreach ($c in $cimAdapters) {
+            $ip = if ($c.IPAddress) { $c.IPAddress[0] } else { "" }
+            $gw = if ($c.DefaultIPGateway) { $c.DefaultIPGateway[0] } else { "" }
+            $adapters += [PSCustomObject]@{
+                Name = $c.Description
+                Description = $c.Description
+                Status = "Up"
+                MAC = $c.MACAddress
+                LinkSpeed = "1 Gbps"
+                IPv4 = $ip
+                Gateway = $gw
+            }
+        }
     }
 }
 
@@ -89,7 +110,7 @@ $proxy = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersio
     Proxy = $proxy
 } | ConvertTo-Json -Depth 2 -Compress`
 
-	out, _ := RunPowerShellWithTimeout(psScript, 8*time.Second)
+	out, _ := RunPowerShellWithTimeout(psScript, 15*time.Second)
 
 	type rawNet struct {
 		Adapters interface{} `json:"Adapters"`
@@ -153,6 +174,37 @@ $proxy = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersio
 		}
 	}
 
+	// Fallback to Go net.Interfaces if list is empty
+	if len(report.ActiveAdapters) == 0 {
+		ifaces, err := net.Interfaces()
+		if err == nil {
+			for _, iface := range ifaces {
+				if (iface.Flags&net.FlagUp) != 0 && (iface.Flags&net.FlagLoopback) == 0 {
+					addrs, _ := iface.Addrs()
+					ipv4 := ""
+					for _, addr := range addrs {
+						if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+							if ipnet.IP.To4() != nil {
+								ipv4 = ipnet.IP.String()
+								break
+							}
+						}
+					}
+					if ipv4 != "" {
+						report.ActiveAdapters = append(report.ActiveAdapters, models.NetworkAdapter{
+							Name:          iface.Name,
+							Description:   iface.Name,
+							InterfaceType: "Ethernet",
+							IPv4Address:   ipv4,
+							MAC:           iface.HardwareAddr.String(),
+							Status:        "Up",
+						})
+					}
+				}
+			}
+		}
+	}
+
 	// 3. Ping Default Gateway if present
 	if report.DefaultGateway != "" {
 		reachable, lat := pingGateway(report.DefaultGateway)
@@ -169,12 +221,12 @@ $proxy = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersio
 		score -= 40
 		report.Severity = models.SeverityCritical
 	}
-	if len(report.ActiveAdapters) == 0 {
+	if len(report.ActiveAdapters) == 0 && !report.InternetOK {
 		score -= 30
 		report.Severity = models.SeverityCritical
 	}
 	if dnsErr != nil && report.InternetOK {
-		score -= 20
+		score -= 10
 		if report.Severity != models.SeverityCritical {
 			report.Severity = models.SeverityWarning
 		}

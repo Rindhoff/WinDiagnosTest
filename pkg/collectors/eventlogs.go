@@ -79,7 +79,7 @@ if ($appEvents) { $events += $appEvents }
 
 $events | ConvertTo-Json -Compress`
 
-	out, _ := RunPowerShellWithTimeout(psScript, 10*time.Second)
+	out, _ := RunPowerShellWithTimeout(psScript, 20*time.Second)
 
 	type rawEvent struct {
 		LogName     string `json:"LogName"`
@@ -142,21 +142,42 @@ $events | ConvertTo-Json -Compress`
 		report.Severity = models.SeverityCritical
 	}
 
-	// Deduct for critical system events
-	score -= report.CriticalEventCount * 10
-	score -= report.ErrorEventCount * 2
+	// Deduct for critical system events (max 25p)
+	if report.CriticalEventCount > 0 {
+		critDeduct := report.CriticalEventCount * 5
+		if critDeduct > 25 {
+			critDeduct = 25
+		}
+		score -= critDeduct
+		if report.CriticalEventCount >= 3 {
+			report.Severity = models.SeverityCritical
+		} else if report.Severity == models.SeverityOK {
+			report.Severity = models.SeverityWarning
+		}
+	}
+
+	// Deduct for general application/system errors with realistic background tolerance (max 10p)
+	if report.ErrorEventCount > 15 {
+		errDeduct := (report.ErrorEventCount - 15) / 5
+		if errDeduct > 10 {
+			errDeduct = 10
+		}
+		score -= errDeduct
+	}
 
 	if score < 0 {
 		score = 0
 	}
 	report.Score = score
 
-	if score < 60 {
-		report.Severity = models.SeverityCritical
-	} else if score < 85 {
-		report.Severity = models.SeverityWarning
-	} else {
-		report.Severity = models.SeverityOK
+	if report.Severity != models.SeverityCritical {
+		if score < 65 {
+			report.Severity = models.SeverityCritical
+		} else if score < 85 {
+			report.Severity = models.SeverityWarning
+		} else {
+			report.Severity = models.SeverityOK
+		}
 	}
 
 	return report

@@ -75,11 +75,11 @@ export namespace models {
 	    target?: string;
 	    message: string;
 	    source: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new BootNetworkFinding(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.provider = source["provider"];
@@ -90,7 +90,7 @@ export namespace models {
 	        this.message = source["message"];
 	        this.source = source["source"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -335,9 +335,9 @@ export namespace models {
 		    return a;
 		}
 	}
-
-
-
+	
+	
+	
 	export class CheckPointAdapter {
 	    name: string;
 	    description: string;
@@ -1145,3 +1145,4 @@ export namespace models {
 	
 
 }
+

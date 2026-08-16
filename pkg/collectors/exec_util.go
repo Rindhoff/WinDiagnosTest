@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// psSemaphore limits concurrent PowerShell processes to avoid CPU and disk thrashing
+var psSemaphore = make(chan struct{}, 3)
+
 func hiddenWindowProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{HideWindow: true}
 }
@@ -16,7 +19,17 @@ func RunPowerShellWithTimeout(psScript string, timeout time.Duration) ([]byte, e
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
+	// Acquire semaphore slot with respect to context cancellation
+	select {
+	case psSemaphore <- struct{}{}:
+		defer func() { <-psSemaphore }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	fullScript := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + psScript
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", fullScript)
 	cmd.SysProcAttr = hiddenWindowProcAttr()
 	return cmd.Output()
 }
+

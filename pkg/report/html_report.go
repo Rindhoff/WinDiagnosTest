@@ -84,11 +84,13 @@ func OpenReportInBrowser(filePath string) error {
 }
 
 func buildHTMLContent(r *models.HealthReport) string {
-	scoreColor := "#10b981" // Green
-	if r.TotalScore < 50 {
+	scoreColor := "#10b981" // Emerald green
+	if r.TotalScore < 55 {
 		scoreColor = "#ef4444" // Red
 	} else if r.TotalScore < 75 {
 		scoreColor = "#f59e0b" // Yellow
+	} else if r.TotalScore < 90 {
+		scoreColor = "#34d399" // Light green
 	}
 
 	var sb strings.Builder

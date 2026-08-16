@@ -43,9 +43,9 @@ func CollectIntegrityDiagnostics() models.IntegrityReport {
 	report.TempFilesSizeBytes = totalTempBytes
 	report.TempFilesSizeDisplay = formatBytes(totalTempBytes)
 
-	// 2. Query PnpDevice Errors and Reboot Pending via PowerShell
+	// 2. Query PnpDevice Errors and Reboot Pending via PowerShell (only connected/present devices)
 	psScript := `$pnpErrors = Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object { 
-    $_.Status -eq 'Error' -or $_.ConfigManagerErrorCode -gt 0 
+    $_.Present -eq $true -and ($_.Status -eq 'Error' -or ($_.ConfigManagerErrorCode -gt 0 -and $_.ConfigManagerErrorCode -ne 22 -and $_.ConfigManagerErrorCode -ne 45))
 } | Select-Object FriendlyName, InstanceId, ConfigManagerErrorCode, Status
 
 $rebootReasons = @()
@@ -64,7 +64,7 @@ if (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\PendingFil
     RebootReasons = $rebootReasons
 } | ConvertTo-Json -Compress`
 
-	out, _ := RunPowerShellWithTimeout(psScript, 8*time.Second)
+	out, _ := RunPowerShellWithTimeout(psScript, 15*time.Second)
 
 	type rawInteg struct {
 		PnpErrors     interface{} `json:"PnpErrors"`
@@ -111,11 +111,15 @@ if (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\PendingFil
 	// Score Calculation
 	score := 100
 	if len(report.DeviceManagerErrors) > 0 {
-		score -= len(report.DeviceManagerErrors) * 15
+		devDeduct := len(report.DeviceManagerErrors) * 10
+		if devDeduct > 30 {
+			devDeduct = 30
+		}
+		score -= devDeduct
 		report.Severity = models.SeverityWarning
 	}
-	if totalTempBytes > 10*1024*1024*1024 { // >10GB
-		score -= 10
+	if totalTempBytes > 30*1024*1024*1024 { // >30GB
+		score -= 5
 	}
 	if report.PendingReboot {
 		score -= 5

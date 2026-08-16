@@ -1340,21 +1340,26 @@ function renderScoreGauge(score: number, rating: string) {
   if (score >= 90) {
     scoreBadge.className = 'badge badge-ok';
     scoreBadge.textContent = 'Utmärkt';
-    scoreDesc.textContent = 'Datorn mår mycket bra! Inga kritiska problem eller allvarliga loggfel upptäcktes.';
+    scoreDesc.textContent = 'Datorn mår mycket bra! Inga allvarliga fel upptäcktes.';
   } else if (score >= 75) {
+    scoreBadge.className = 'badge badge-ok';
+    scoreBadge.textContent = 'Gott skick';
+    scoreDesc.textContent = 'Datorn fungerar bra. Inga akuta problem identifierades.';
+  } else if (score >= 55) {
     scoreBadge.className = 'badge badge-warning';
     scoreBadge.textContent = 'Varning';
     scoreDesc.textContent = 'Datorn fungerar, men några anmärkningar eller varningar hittades som bör ses över.';
   } else {
     scoreBadge.className = 'badge badge-critical';
     scoreBadge.textContent = 'Åtgärd krävs';
-    scoreDesc.textContent = 'Kritiska avvikelser upptäcktes. Använd snabbåtgärderna nedan för att åtgärda problemen.';
+    scoreDesc.textContent = 'Avvikelser upptäcktes som rekommenderas att åtgärdas.';
   }
 }
 
 function getScoreColor(score: number): string {
   if (score >= 90) return '#10b981';
-  if (score >= 75) return '#f59e0b';
+  if (score >= 75) return '#34d399';
+  if (score >= 55) return '#f59e0b';
   return '#ef4444';
 }
 

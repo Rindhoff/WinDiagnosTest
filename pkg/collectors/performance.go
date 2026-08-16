@@ -74,7 +74,7 @@ foreach ($rp in $regPaths) {
     Startup = $startup
 } | ConvertTo-Json -Depth 2 -Compress`
 
-	out, _ := RunPowerShellWithTimeout(psScript, 8*time.Second)
+	out, _ := RunPowerShellWithTimeout(psScript, 15*time.Second)
 
 	type rawPerf struct {
 		TotalProcs   int         `json:"TotalProcs"`

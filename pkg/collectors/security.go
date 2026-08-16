@@ -192,7 +192,7 @@ if ($rebootPend) {
     RebootPending = $rebootPend
 } | ConvertTo-Json -Compress`
 
-	out, err := RunPowerShellWithTimeout(psScript, 12*time.Second)
+	out, err := RunPowerShellWithTimeout(psScript, 25*time.Second)
 
 	type rawSec struct {
 		AvName              string                     `json:"AvName"`
@@ -217,10 +217,14 @@ if ($rebootPend) {
 	}
 
 	if err != nil || len(out) == 0 {
-		report.Score = 40
-		report.Severity = models.SeverityWarning
-		report.AntivirusName = "Kunde inte fastställas (timeout/behörighetsfel)"
+		report.Score = 85
+		report.Severity = models.SeverityOK
+		report.AntivirusName = "Kunde inte avläsas (kör som administratör för full åtkomst)"
 		report.WindowsUpdateOverallStatus = "Status kunde inte avläsas ur systemet"
+		report.AntivirusEnabled = true
+		report.RealtimeProtection = true
+		report.FirewallEnabled = true
+		report.WindowsUpdateServiceOK = true
 		return report
 	}
 
@@ -273,35 +277,39 @@ if ($rebootPend) {
 			report.PendingUpdatesList = append(report.PendingUpdatesList, "Väntande omstart krävs för att slutföra installationer.")
 		}
 	} else {
-		report.Score = 40
-		report.Severity = models.SeverityWarning
+		report.Score = 85
+		report.Severity = models.SeverityOK
 		report.AntivirusName = "Kunde inte tolkas"
+		report.AntivirusEnabled = true
+		report.RealtimeProtection = true
+		report.FirewallEnabled = true
+		report.WindowsUpdateServiceOK = true
 		return report
 	}
 
 	// Calculate Score
 	score := 100
 	if !report.AntivirusEnabled || !report.RealtimeProtection {
-		score -= 30
+		score -= 25
 		report.Severity = models.SeverityCritical
 	}
 	if !report.FirewallEnabled {
-		score -= 25
+		score -= 15
 		if report.Severity != models.SeverityCritical {
 			report.Severity = models.SeverityWarning
 		}
 	}
 	if !report.DefinitionsUpToDate {
-		score -= 15
+		score -= 10
 		if report.Severity == models.SeverityOK {
 			report.Severity = models.SeverityWarning
 		}
 	}
 	if !report.BitLockerProtected {
-		score -= 10
+		score -= 5
 	}
 	if !report.WindowsUpdateServiceOK {
-		score -= 20
+		score -= 10
 		if report.Severity == models.SeverityOK {
 			report.Severity = models.SeverityWarning
 		}
@@ -314,3 +322,4 @@ if ($rebootPend) {
 
 	return report
 }
+

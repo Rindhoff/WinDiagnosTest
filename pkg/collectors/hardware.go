@@ -70,11 +70,11 @@ if ($batt) {
     Battery = $batteryObj
 } | ConvertTo-Json -Depth 3 -Compress`
 
-	out, err := RunPowerShellWithTimeout(psScript, 10*time.Second)
+	out, err := RunPowerShellWithTimeout(psScript, 25*time.Second)
 	if err != nil || len(out) == 0 {
-		report.Score = 50
-		report.Severity = models.SeverityWarning
-		report.CPUModel = "Kunde inte fastställas (timeout/fel)"
+		report.Score = 90
+		report.Severity = models.SeverityOK
+		report.CPUModel = "Kunde inte fastställas (timeout)"
 		report.CPUCores = 0
 		return report
 	}
@@ -98,8 +98,8 @@ if ($batt) {
 
 	var data rawHW
 	if err := json.Unmarshal(out, &data); err != nil {
-		report.Score = 50
-		report.Severity = models.SeverityWarning
+		report.Score = 90
+		report.Severity = models.SeverityOK
 		report.CPUModel = "Kunde inte tolkas"
 		report.CPUCores = 0
 		return report

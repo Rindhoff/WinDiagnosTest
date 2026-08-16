@@ -95,8 +95,11 @@ try {
     if ($degEvents) {
         foreach ($e in $degEvents) {
             [xml]$xml = $e.ToXml()
-            $nameVal = ($xml.Event.EventData.Data | Where-Object { $_.Name -match 'Name' }).'#text'
-            $timeVal = ($xml.Event.EventData.Data | Where-Object { $_.Name -match 'TotalTime' }).'#text'
+            $nameItem = $xml.Event.EventData.Data | Where-Object { $_.Name -in @('DriverFriendlyName','DriverName','ServiceName','ServiceFriendlyName','FriendlyName','ProcessName','Name','AppName') -and $_.'#text' } | Select-Object -First 1
+            $nameVal = if ($nameItem) { [string]$nameItem.'#text' } else { "" }
+            $timeItem = $xml.Event.EventData.Data | Where-Object { $_.Name -in @('TotalTime','DriverTotalTime','ServiceTotalTime') -and $_.'#text' } | Select-Object -First 1
+            $timeVal = if ($timeItem) { [string]$timeItem.'#text' } else { "" }
+
             $typeStr = switch ($e.Id) {
                 101 { "Drivrutin" }
                 102 { "Tjänst" }
@@ -230,8 +233,7 @@ Add-Startup "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" "HKLM (Alla an
     StartupApps = $startupApps
 } | ConvertTo-Json -Compress`
 
-	out, _ := RunPowerShellWithTimeout(psScript, 15*time.Second)
-
+	out, _ := RunPowerShellWithTimeout(psScript, 20*time.Second)
 
 	type rawBoot struct {
 		LastBoot        string `json:"LastBoot"`
@@ -337,20 +339,28 @@ Add-Startup "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" "HKLM (Alla an
 
 	// Calculate Score and Severity
 	score := 100
-	if report.TotalBootDurationSeconds > 45.0 {
-		score -= 30
+	if report.TotalBootDurationSeconds > 60.0 {
+		score -= 20
 		report.Severity = models.SeverityWarning
-	} else if report.TotalBootDurationSeconds > 25.0 {
-		score -= 15
+	} else if report.TotalBootDurationSeconds > 35.0 {
+		score -= 10
 	}
 
 	if len(report.UnreachableResources) > 0 {
-		score -= len(report.UnreachableResources) * 20
-		report.Severity = models.SeverityCritical
+		uncDeduct := len(report.UnreachableResources) * 15
+		if uncDeduct > 30 {
+			uncDeduct = 30
+		}
+		score -= uncDeduct
+		report.Severity = models.SeverityWarning
 	}
 
 	if len(report.BootDegradations) > 0 {
-		score -= len(report.BootDegradations) * 5
+		degDeduct := len(report.BootDegradations) * 3
+		if degDeduct > 15 {
+			degDeduct = 15
+		}
+		score -= degDeduct
 	}
 
 	enabledStartupCount := 0
@@ -359,8 +369,8 @@ Add-Startup "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" "HKLM (Alla an
 			enabledStartupCount++
 		}
 	}
-	if enabledStartupCount > 10 {
-		score -= 10
+	if enabledStartupCount > 15 {
+		score -= 5
 	}
 
 	if score < 0 {
