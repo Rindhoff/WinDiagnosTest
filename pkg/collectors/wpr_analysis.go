@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -115,16 +116,25 @@ func exportCPUUsageWithWPA(exporterPath, tracePath string) ([]models.BootTimingI
 		return nil, fmt.Errorf("kunde inte skriva WPA-analysprofilen: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exporterPath, "-i", tracePath, "-profile", profilePath, "-outputfolder", analysisDir)
 	cmd.SysProcAttr = hiddenWindowProcAttr()
-	out, err := cmd.CombinedOutput()
+	logPath := filepath.Join(analysisDir, "wpaexporter.log")
+	logFile, createErr := os.Create(logPath)
+	if createErr != nil {
+		return nil, fmt.Errorf("kunde inte skapa WPA Exporter-loggen: %w", createErr)
+	}
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	err := cmd.Run()
+	_ = logFile.Close()
+	logTail := readFileTail(logPath, 16*1024)
 	if ctx.Err() == context.DeadlineExceeded {
-		return nil, fmt.Errorf("WPA Exporter överskred tidsgränsen 5 minuter")
+		return nil, fmt.Errorf("WPA Exporter överskred tidsgränsen 20 minuter")
 	}
 	if err != nil {
-		return nil, fmt.Errorf("WPA Exporter misslyckades: %v (%s)", err, strings.TrimSpace(string(out)))
+		return nil, fmt.Errorf("WPA Exporter misslyckades: %v (%s)", err, strings.TrimSpace(logTail))
 	}
 
 	csvFiles, _ := filepath.Glob(filepath.Join(analysisDir, "*.csv"))
@@ -226,16 +236,39 @@ func parseWPAFloat(raw string) (float64, error) {
 	s := strings.TrimSpace(strings.ReplaceAll(raw, "\u00a0", ""))
 	s = strings.ReplaceAll(s, " ", "")
 	if strings.Contains(s, ",") && strings.Contains(s, ".") {
-		s = strings.ReplaceAll(s, ",", "")
-	} else if strings.Contains(s, ",") {
-		parts := strings.Split(s, ",")
-		if len(parts) == 2 && len(parts[1]) != 3 {
-			s = parts[0] + "." + parts[1]
+		if strings.LastIndex(s, ",") > strings.LastIndex(s, ".") {
+			s = strings.ReplaceAll(s, ".", "")
+			s = strings.ReplaceAll(s, ",", ".")
 		} else {
 			s = strings.ReplaceAll(s, ",", "")
 		}
+	} else if strings.Contains(s, ",") {
+		// WPA Exporter follows the Windows locale. In Swedish output, duration
+		// values use a decimal comma and may contain six fractional digits.
+		s = strings.ReplaceAll(s, ",", ".")
 	}
 	return strconv.ParseFloat(s, 64)
+}
+
+func readFileTail(path string, maxBytes int64) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	start := fi.Size() - maxBytes
+	if start < 0 {
+		start = 0
+	}
+	if _, err := f.Seek(start, 0); err != nil {
+		return ""
+	}
+	data, _ := io.ReadAll(f)
+	return string(data)
 }
 
 func collectBootNetworkFindings(since time.Time) []models.BootNetworkFinding {

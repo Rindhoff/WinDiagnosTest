@@ -31,7 +31,7 @@ func TestValidatedBootProfilesAvoidsDuplicateKernelCollectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"GeneralProfile", "Network", "FileIO"}
+	want := []string{"GeneralProfile.Light", "Network.Light"}
 	if len(profiles) != len(want) {
 		t.Fatalf("got %v, want %v", profiles, want)
 	}
@@ -44,7 +44,7 @@ func TestValidatedBootProfilesAvoidsDuplicateKernelCollectors(t *testing.T) {
 
 func TestParseWPAProcessCSVData(t *testing.T) {
 	csv := "New Process,Count,CPU Usage (in view)\n" +
-		"explorer.exe (1234),\"1,500\",123.5\n" +
+		"explorer.exe (1234),1500,123.5\n" +
 		"service.exe (4321),250,22.25\n"
 	items, err := parseWPAProcessCSVData(csv)
 	if err != nil {
@@ -58,5 +58,10 @@ func TestParseWPAProcessCSVData(t *testing.T) {
 	items, err = parseWPAProcessCSVData(quoted)
 	if err != nil || len(items) != 1 || items[0].DurationMs != 124 || items[0].Count != 1500 {
 		t.Fatalf("localized CSV result=%#v err=%v", items, err)
+	}
+
+	value, err := parseWPAFloat("625937,994802")
+	if err != nil || value < 625937.99 || value > 625938.00 {
+		t.Fatalf("localized WPA decimal parsed as %f, err=%v", value, err)
 	}
 }

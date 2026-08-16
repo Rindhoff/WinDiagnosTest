@@ -1938,7 +1938,22 @@ function renderBootTab(boot: models.BootLogonReport) {
       analysisError.style.display = analysisError.textContent ? 'block' : 'none';
     }
     
-    if (boot.boot_trace.can_stop) {
+    if (boot.boot_trace.state === 'recoverable') {
+      wprBadge.className = 'badge badge-warning';
+      wprBadge.textContent = '🟡 Rådata hittad';
+      if (wprRecordingBanner) wprRecordingBanner.style.display = 'none';
+      if (btnStartWprReboot) btnStartWprReboot.style.display = 'none';
+      if (btnStartWprManual) btnStartWprManual.style.display = 'none';
+      if (btnStopWpr) {
+        btnStopWpr.style.display = 'inline-flex';
+        btnStopWpr.innerHTML = '<span>🛟 Återställ, sammanfoga & analysera</span>';
+      }
+      if (btnCancelWpr) btnCancelWpr.style.display = 'inline-flex';
+      if (btnOpenFolder) btnOpenFolder.style.display = 'inline-flex';
+      if (btnOpenWPA) btnOpenWPA.style.display = 'none';
+      if (btnAnalyzeWpr) btnAnalyzeWpr.style.display = 'none';
+      if (btnClearTrace) btnClearTrace.style.display = 'inline-flex';
+    } else if (boot.boot_trace.can_stop) {
       wprBadge.className = 'badge badge-critical';
       wprBadge.textContent = '🔴 Spelar in';
       if (wprRecordingBanner) wprRecordingBanner.style.display = 'block';
