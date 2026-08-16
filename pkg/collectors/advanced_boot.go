@@ -40,7 +40,7 @@ type SHELLEXECUTEINFO struct {
 
 const (
 	SEE_MASK_NOCLOSEPROCESS = 0x00000040
-	SW_SHOWNORMAL           = 1
+	SW_HIDE                 = 0
 )
 
 func runElevatedProcessWait(exePath string, args string) (uint32, error) {
@@ -63,7 +63,7 @@ func runElevatedProcessWait(exePath string, args string) (uint32, error) {
 	info.lpVerb = verbPtr
 	info.lpFile = filePtr
 	info.lpParameters = argsPtr
-	info.nShow = SW_SHOWNORMAL
+	info.nShow = SW_HIDE
 
 	ret, _, err := procShellExecuteExW.Call(uintptr(unsafe.Pointer(&info)))
 	if ret == 0 {
@@ -331,29 +331,17 @@ func StartWPRBootTraceWithReboot(profile string, rebootNow bool) models.FixActio
 	outBytes, runErr := cmd.CombinedOutput()
 	outStr := strings.TrimSpace(string(outBytes))
 
-	configured := (runErr == nil || strings.Contains(outStr, "Autologger is enabled") || strings.Contains(outStr, "Success"))
+	configured := (runErr == nil && !strings.Contains(outStr, "Access is denied") && !strings.Contains(outStr, "0x80070005"))
 
-	// 2. If access denied, invoke elevated with ShellExecuteExW
+	// 2. If access denied, invoke elevated silently with ShellExecuteExW
 	if !configured {
-		r.Output = append(r.Output, "Begär administratörsbehörighet (UAC) för att konfigurera Autologger...")
+		r.Output = append(r.Output, "Begär administratörsbehörighet (UAC)...")
 		exitCode, elevErr := runElevatedProcessWait(wprPath, fmt.Sprintf("-addboot %s -filemode", profile))
-		if elevErr != nil {
-			r.Success = false
-			r.Message = fmt.Sprintf("Kunde inte starta WPR med administratörsbehörighet: %v", elevErr)
-			return r
-		}
-		if exitCode == 0 {
+		if elevErr == nil && exitCode == 0 {
 			configured = true
+		} else if elevErr != nil {
+			r.Output = append(r.Output, fmt.Sprintf("UAC fel: %v", elevErr))
 		}
-	}
-
-	// 3. Verify status from wpr.exe
-	time.Sleep(500 * time.Millisecond)
-	statusCmd := exec.Command(wprPath, "-status")
-	statusCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	statusOut, _ := statusCmd.CombinedOutput()
-	if strings.Contains(string(statusOut), "Autologger is enabled") {
-		configured = true
 	}
 
 	if configured {
@@ -378,7 +366,7 @@ func StartWPRBootTraceWithReboot(profile string, rebootNow bool) models.FixActio
 	}
 
 	r.Success = false
-	r.Message = "Kunde inte konfigurera WPR boot-spårning. Kontrollera att du godkände UAC-rutan."
+	r.Message = "Kunde inte konfigurera WPR boot-spårning. Kontrollera att du kör WinHealth som administratör."
 	return r
 }
 

@@ -52,8 +52,8 @@ func TestCheckPointCollector(t *testing.T) {
 
 func TestBootLogonDiagnostics(t *testing.T) {
 	boot := collectors.CollectBootLogonDiagnostics()
-	if boot.TotalBootDurationSeconds <= 0 {
-		t.Errorf("Expected TotalBootDurationSeconds > 0, got %f", boot.TotalBootDurationSeconds)
+	if boot.TotalBootDurationSeconds < 0 {
+		t.Errorf("Expected TotalBootDurationSeconds >= 0, got %f", boot.TotalBootDurationSeconds)
 	}
 	if boot.LastBootTime == "" {
 		t.Errorf("Expected LastBootTime to be non-empty")

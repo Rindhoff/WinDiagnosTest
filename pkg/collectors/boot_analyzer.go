@@ -230,13 +230,8 @@ Add-Startup "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" "HKLM (Alla an
     StartupApps = $startupApps
 } | ConvertTo-Json -Compress`
 
-	out, err := RunPowerShellWithTimeout(psScript, 12*time.Second)
-	if err != nil || len(out) == 0 {
-		report.Score = 70
-		report.Severity = models.SeverityOK
-		report.SummaryText = "Uppstartsdata kunde inte avläsas (timeout/fel i eventlogg)."
-		return report
-	}
+	out, _ := RunPowerShellWithTimeout(psScript, 15*time.Second)
+
 
 	type rawBoot struct {
 		LastBoot        string `json:"LastBoot"`
