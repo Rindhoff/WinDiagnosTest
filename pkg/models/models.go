@@ -14,25 +14,25 @@ const (
 
 // HealthReport is the top-level report returned to the frontend
 type HealthReport struct {
-	Timestamp      time.Time             `json:"timestamp"`
-	ComputerName   string                `json:"computer_name"`
-	OSVersion      string                `json:"os_version"`
-	OSBuild        string                `json:"os_build"`
-	Architecture   string                `json:"architecture"`
-	Uptime         string                `json:"uptime"`
-	TotalScore     int                   `json:"total_score"`     // 0 - 100
-	ScoreRating    string                `json:"score_rating"`    // "Utmärkt", "Bra", "Varning", "Kritiskt"
-	SummaryBadges  map[string]int        `json:"summary_badges"`  // counts of OK, Warning, Critical
-	TopIssues      []IssueSummary        `json:"top_issues"`
-	CheckPointVPN  CheckPointReport      `json:"checkpoint_vpn"`
-	Hardware       HardwareReport        `json:"hardware"`
-	EventLogs      EventLogsReport       `json:"event_logs"`
-	Network        NetworkReport         `json:"network"`
-	Security       SecurityReport        `json:"security"`
-	Performance    PerformanceReport     `json:"performance"`
-	Integrity      IntegrityReport       `json:"integrity"`
-	BootLogon      BootLogonReport       `json:"boot_logon"`
-	QuickFixStatus map[string]bool       `json:"quick_fix_status"`
+	Timestamp      time.Time         `json:"timestamp"`
+	ComputerName   string            `json:"computer_name"`
+	OSVersion      string            `json:"os_version"`
+	OSBuild        string            `json:"os_build"`
+	Architecture   string            `json:"architecture"`
+	Uptime         string            `json:"uptime"`
+	TotalScore     int               `json:"total_score"`    // 0 - 100
+	ScoreRating    string            `json:"score_rating"`   // "Utmärkt", "Bra", "Varning", "Kritiskt"
+	SummaryBadges  map[string]int    `json:"summary_badges"` // counts of OK, Warning, Critical
+	TopIssues      []IssueSummary    `json:"top_issues"`
+	CheckPointVPN  CheckPointReport  `json:"checkpoint_vpn"`
+	Hardware       HardwareReport    `json:"hardware"`
+	EventLogs      EventLogsReport   `json:"event_logs"`
+	Network        NetworkReport     `json:"network"`
+	Security       SecurityReport    `json:"security"`
+	Performance    PerformanceReport `json:"performance"`
+	Integrity      IntegrityReport   `json:"integrity"`
+	BootLogon      BootLogonReport   `json:"boot_logon"`
+	QuickFixStatus map[string]bool   `json:"quick_fix_status"`
 }
 
 type IssueSummary struct {
@@ -45,21 +45,21 @@ type IssueSummary struct {
 
 // CheckPointReport contains full diagnostics for Check Point Endpoint Security / VPN
 type CheckPointReport struct {
-	Detected            bool                 `json:"detected"`
-	ClientVersion       string               `json:"client_version"`
-	InstallPath         string               `json:"install_path"`
-	Severity            Severity             `json:"severity"`
-	Score               int                  `json:"score"` // 0-100
-	Services            []CheckPointService  `json:"services"`
-	VirtualAdapters     []CheckPointAdapter  `json:"virtual_adapters"`
-	ActiveRoutes        []string             `json:"active_routes"`
-	RecentLogErrors     []string             `json:"recent_log_errors"`
-	LogFilesFound       []string             `json:"log_files_found"`
-	GatewayConnectivity []GatewayTestResult  `json:"gateway_connectivity"`
-	ConfigurationFound  bool                 `json:"configuration_found"`
-	ConfigDetails       map[string]string    `json:"config_details"`
-	DiagnosticNotes     []string             `json:"diagnostic_notes"`
-	RecommendedAction   string               `json:"recommended_action"`
+	Detected            bool                `json:"detected"`
+	ClientVersion       string              `json:"client_version"`
+	InstallPath         string              `json:"install_path"`
+	Severity            Severity            `json:"severity"`
+	Score               int                 `json:"score"` // 0-100
+	Services            []CheckPointService `json:"services"`
+	VirtualAdapters     []CheckPointAdapter `json:"virtual_adapters"`
+	ActiveRoutes        []string            `json:"active_routes"`
+	RecentLogErrors     []string            `json:"recent_log_errors"`
+	LogFilesFound       []string            `json:"log_files_found"`
+	GatewayConnectivity []GatewayTestResult `json:"gateway_connectivity"`
+	ConfigurationFound  bool                `json:"configuration_found"`
+	ConfigDetails       map[string]string   `json:"config_details"`
+	DiagnosticNotes     []string            `json:"diagnostic_notes"`
+	RecommendedAction   string              `json:"recommended_action"`
 }
 
 type CheckPointService struct {
@@ -91,55 +91,55 @@ type GatewayTestResult struct {
 
 // HardwareReport contains CPU, RAM, Disk and Battery metrics
 type HardwareReport struct {
-	Severity     Severity     `json:"severity"`
-	Score        int          `json:"score"`
-	CPUModel     string       `json:"cpu_model"`
-	CPUCores     int          `json:"cpu_cores"`
-	CPUUsagePct  float64      `json:"cpu_usage_pct"`
-	TotalRAMGB   float64      `json:"total_ram_gb"`
-	UsedRAMGB    float64      `json:"used_ram_gb"`
-	FreeRAMGB    float64      `json:"free_ram_gb"`
-	RAMUsagePct  float64      `json:"ram_usage_pct"`
-	Disks        []DiskInfo   `json:"disks"`
-	Battery      *BatteryInfo `json:"battery,omitempty"`
-	Motherboard  string       `json:"motherboard"`
-	BIOSVersion  string       `json:"bios_version"`
+	Severity    Severity     `json:"severity"`
+	Score       int          `json:"score"`
+	CPUModel    string       `json:"cpu_model"`
+	CPUCores    int          `json:"cpu_cores"`
+	CPUUsagePct float64      `json:"cpu_usage_pct"`
+	TotalRAMGB  float64      `json:"total_ram_gb"`
+	UsedRAMGB   float64      `json:"used_ram_gb"`
+	FreeRAMGB   float64      `json:"free_ram_gb"`
+	RAMUsagePct float64      `json:"ram_usage_pct"`
+	Disks       []DiskInfo   `json:"disks"`
+	Battery     *BatteryInfo `json:"battery,omitempty"`
+	Motherboard string       `json:"motherboard"`
+	BIOSVersion string       `json:"bios_version"`
 }
 
 type DiskInfo struct {
-	DeviceID      string   `json:"device_id"`
-	Model         string   `json:"model"`
-	MediaType     string   `json:"media_type"` // SSD, HDD, NVMe
-	DriveLetter   string   `json:"drive_letter"`
-	FileSystem    string   `json:"file_system"`
-	TotalGB       float64  `json:"total_gb"`
-	FreeGB        float64  `json:"free_gb"`
-	UsedGB        float64  `json:"used_gb"`
-	UsagePct      float64  `json:"usage_pct"`
-	SmartStatus   string   `json:"smart_status"` // OK, Pred Fail, Warning
-	SmartHealthy  bool     `json:"smart_healthy"`
-	IsSystemDrive bool     `json:"is_system_drive"`
+	DeviceID      string  `json:"device_id"`
+	Model         string  `json:"model"`
+	MediaType     string  `json:"media_type"` // SSD, HDD, NVMe
+	DriveLetter   string  `json:"drive_letter"`
+	FileSystem    string  `json:"file_system"`
+	TotalGB       float64 `json:"total_gb"`
+	FreeGB        float64 `json:"free_gb"`
+	UsedGB        float64 `json:"used_gb"`
+	UsagePct      float64 `json:"usage_pct"`
+	SmartStatus   string  `json:"smart_status"` // OK, Pred Fail, Warning
+	SmartHealthy  bool    `json:"smart_healthy"`
+	IsSystemDrive bool    `json:"is_system_drive"`
 }
 
 type BatteryInfo struct {
-	Present          bool    `json:"present"`
-	ChargePercent    int     `json:"charge_percent"`
-	Status           string  `json:"status"` // Charging, Discharging, AC Connected
-	HealthPct        float64 `json:"health_pct"` // Design Capacity vs Full Charge
-	DesignCapacity   int64   `json:"design_capacity"`
-	FullCapacity     int64   `json:"full_capacity"`
-	CycleCount       int     `json:"cycle_count"`
+	Present        bool    `json:"present"`
+	ChargePercent  int     `json:"charge_percent"`
+	Status         string  `json:"status"`     // Charging, Discharging, AC Connected
+	HealthPct      float64 `json:"health_pct"` // Design Capacity vs Full Charge
+	DesignCapacity int64   `json:"design_capacity"`
+	FullCapacity   int64   `json:"full_capacity"`
+	CycleCount     int     `json:"cycle_count"`
 }
 
 // EventLogsReport contains crash analysis and recent errors
 type EventLogsReport struct {
-	Severity           Severity         `json:"severity"`
-	Score              int              `json:"score"`
-	BSODCrashDumps     []MinidumpInfo   `json:"bsod_crash_dumps"`
-	RecentSystemErrors []EventLogEntry  `json:"recent_system_errors"`
-	RecentAppCrashes   []EventLogEntry  `json:"recent_app_crashes"`
-	CriticalEventCount int              `json:"critical_event_count"`
-	ErrorEventCount    int              `json:"error_event_count"`
+	Severity           Severity        `json:"severity"`
+	Score              int             `json:"score"`
+	BSODCrashDumps     []MinidumpInfo  `json:"bsod_crash_dumps"`
+	RecentSystemErrors []EventLogEntry `json:"recent_system_errors"`
+	RecentAppCrashes   []EventLogEntry `json:"recent_app_crashes"`
+	CriticalEventCount int             `json:"critical_event_count"`
+	ErrorEventCount    int             `json:"error_event_count"`
 }
 
 type MinidumpInfo struct {
@@ -162,17 +162,17 @@ type EventLogEntry struct {
 
 // NetworkReport contains connectivity and DNS information
 type NetworkReport struct {
-	Severity         Severity          `json:"severity"`
-	Score            int               `json:"score"`
-	InternetOK       bool              `json:"internet_ok"`
-	DefaultGateway   string            `json:"default_gateway"`
-	GatewayPingMs    int64             `json:"gateway_ping_ms"`
-	PublicIP         string            `json:"public_ip"`
-	DNSServers       []DNSServerResult `json:"dns_servers"`
-	ActiveAdapters   []NetworkAdapter  `json:"active_adapters"`
-	WinsockOK        bool              `json:"winsock_ok"`
-	ProxyConfigured  bool              `json:"proxy_configured"`
-	ProxyDetails     string            `json:"proxy_details,omitempty"`
+	Severity        Severity          `json:"severity"`
+	Score           int               `json:"score"`
+	InternetOK      bool              `json:"internet_ok"`
+	DefaultGateway  string            `json:"default_gateway"`
+	GatewayPingMs   int64             `json:"gateway_ping_ms"`
+	PublicIP        string            `json:"public_ip"`
+	DNSServers      []DNSServerResult `json:"dns_servers"`
+	ActiveAdapters  []NetworkAdapter  `json:"active_adapters"`
+	WinsockOK       bool              `json:"winsock_ok"`
+	ProxyConfigured bool              `json:"proxy_configured"`
+	ProxyDetails    string            `json:"proxy_details,omitempty"`
 }
 
 type DNSServerResult struct {
@@ -183,15 +183,15 @@ type DNSServerResult struct {
 }
 
 type NetworkAdapter struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
 	InterfaceType string `json:"interface_type"` // Ethernet, Wi-Fi, VPN
-	IPv4Address string   `json:"ipv4_address"`
-	SubnetMask  string   `json:"subnet_mask"`
-	Gateway     string   `json:"gateway"`
-	MAC         string   `json:"mac"`
-	Status      string   `json:"status"` // Up, Down
-	SpeedMbps   int64    `json:"speed_mbps"`
+	IPv4Address   string `json:"ipv4_address"`
+	SubnetMask    string `json:"subnet_mask"`
+	Gateway       string `json:"gateway"`
+	MAC           string `json:"mac"`
+	Status        string `json:"status"` // Up, Down
+	SpeedMbps     int64  `json:"speed_mbps"`
 }
 
 // WindowsUpdateItem represents a single Windows Update item
@@ -229,13 +229,13 @@ type SecurityReport struct {
 
 // PerformanceReport contains top consumers and startup programs
 type PerformanceReport struct {
-	Severity            Severity       `json:"severity"`
-	Score               int            `json:"score"`
-	TopProcessesByCPU   []ProcessInfo  `json:"top_processes_by_cpu"`
-	TopProcessesByRAM   []ProcessInfo  `json:"top_processes_by_ram"`
-	StartupPrograms     []StartupItem  `json:"startup_programs"`
-	TotalRunningProcess int            `json:"total_running_process"`
-	TotalThreadsCount   int            `json:"total_threads_count"`
+	Severity            Severity      `json:"severity"`
+	Score               int           `json:"score"`
+	TopProcessesByCPU   []ProcessInfo `json:"top_processes_by_cpu"`
+	TopProcessesByRAM   []ProcessInfo `json:"top_processes_by_ram"`
+	StartupPrograms     []StartupItem `json:"startup_programs"`
+	TotalRunningProcess int           `json:"total_running_process"`
+	TotalThreadsCount   int           `json:"total_threads_count"`
 }
 
 type ProcessInfo struct {
@@ -252,7 +252,7 @@ type StartupItem struct {
 	Command  string `json:"command"`
 	Location string `json:"location"` // Registry, Startup Folder, TaskScheduler
 	Enabled  bool   `json:"enabled"`
-	Impact   string `json:"impact"`   // High, Medium, Low
+	Impact   string `json:"impact"` // High, Medium, Low
 }
 
 // IntegrityReport contains system file check, device manager errors, and temp file sizes
@@ -286,20 +286,20 @@ type FixActionResult struct {
 
 // BootLogonReport contains boot and logon performance analysis, GPO metrics and unreachable network resources
 type BootLogonReport struct {
-	Severity                 Severity              `json:"severity"`
-	Score                    int                   `json:"score"`
-	LastBootTime             string                `json:"last_boot_time"`
-	TotalBootDurationSeconds float64               `json:"total_boot_duration_seconds"`
-	MainPathBootSeconds      float64               `json:"main_path_boot_seconds"` // BIOS/Kernel
-	UserLogonWaitSeconds     float64               `json:"user_logon_wait_seconds"`
-	PostBootDelaySeconds     float64               `json:"post_boot_delay_seconds"`
-	FastStartupEnabled       bool                  `json:"fast_startup_enabled"`
-	IsDomainJoined           bool                  `json:"is_domain_joined"`
-	DomainName               string                `json:"domain_name"`
-	LogonServer              string                `json:"logon_server"`
-	GPOTotalTimeMs           int                   `json:"gpo_total_time_ms"`
-	GPODetails               []GPOExtensionMetric  `json:"gpo_details"`
-	UnreachableResources     []UnreachableResource `json:"unreachable_resources"`
+	Severity                 Severity               `json:"severity"`
+	Score                    int                    `json:"score"`
+	LastBootTime             string                 `json:"last_boot_time"`
+	TotalBootDurationSeconds float64                `json:"total_boot_duration_seconds"`
+	MainPathBootSeconds      float64                `json:"main_path_boot_seconds"` // BIOS/Kernel
+	UserLogonWaitSeconds     float64                `json:"user_logon_wait_seconds"`
+	PostBootDelaySeconds     float64                `json:"post_boot_delay_seconds"`
+	FastStartupEnabled       bool                   `json:"fast_startup_enabled"`
+	IsDomainJoined           bool                   `json:"is_domain_joined"`
+	DomainName               string                 `json:"domain_name"`
+	LogonServer              string                 `json:"logon_server"`
+	GPOTotalTimeMs           int                    `json:"gpo_total_time_ms"`
+	GPODetails               []GPOExtensionMetric   `json:"gpo_details"`
+	UnreachableResources     []UnreachableResource  `json:"unreachable_resources"`
 	BootDegradations         []BootDegradationItem  `json:"boot_degradations"`
 	StartupApps              []StartupItem          `json:"startup_apps"`
 	AdvancedAutoruns         []AdvancedAutorunsItem `json:"advanced_autoruns"`
@@ -337,28 +337,52 @@ type BootDegradationItem struct {
 
 // BootTraceStatus represents the current state of Windows Performance Recorder (WPR) boot recording
 type BootTraceStatus struct {
-	IsAvailable     bool             `json:"is_available"`
-	IsConfigured    bool             `json:"is_configured"`
-	IsRecording     bool             `json:"is_recording"`
-	HasTraceData    bool             `json:"has_trace_data"`
-	ProfileName     string           `json:"profile_name"`
-	TraceFilePath   string           `json:"trace_file_path,omitempty"`
-	TraceFileSize   string           `json:"trace_file_size,omitempty"`
-	TraceRecordedAt string           `json:"trace_recorded_at,omitempty"`
-	StatusMessage   string           `json:"status_message"`
-	IsWPAAvailable  bool             `json:"is_wpa_available"`
-	SlowestDrivers  []BootTimingItem `json:"slowest_drivers,omitempty"`
-	SlowestServices []BootTimingItem `json:"slowest_services,omitempty"`
+	IsAvailable            bool                 `json:"is_available"`
+	IsConfigured           bool                 `json:"is_configured"`
+	IsRecording            bool                 `json:"is_recording"`
+	CanStop                bool                 `json:"can_stop"`
+	HasTraceData           bool                 `json:"has_trace_data"`
+	State                  string               `json:"state"`
+	ProfileName            string               `json:"profile_name"`
+	TraceFilePath          string               `json:"trace_file_path,omitempty"`
+	TraceFileSize          string               `json:"trace_file_size,omitempty"`
+	TraceRecordedAt        string               `json:"trace_recorded_at,omitempty"`
+	StatusMessage          string               `json:"status_message"`
+	LastError              string               `json:"last_error,omitempty"`
+	IsWPAAvailable         bool                 `json:"is_wpa_available"`
+	IsWPAExporterAvailable bool                 `json:"is_wpa_exporter_available"`
+	WPAExporterPath        string               `json:"wpa_exporter_path,omitempty"`
+	AnalysisSource         string               `json:"analysis_source,omitempty"`
+	AnalysisError          string               `json:"analysis_error,omitempty"`
+	SlowestDrivers         []BootTimingItem     `json:"slowest_drivers,omitempty"`
+	SlowestServices        []BootTimingItem     `json:"slowest_services,omitempty"`
+	TopProcesses           []BootTimingItem     `json:"top_processes,omitempty"`
+	NetworkFindings        []BootNetworkFinding `json:"network_findings,omitempty"`
 }
 
 // BootTimingItem represents a driver, service, or process measured during boot
 type BootTimingItem struct {
-	Name        string `json:"name"`
-	Category    string `json:"category"` // Driver, Service, Process
-	DurationMs  int    `json:"duration_ms"`
+	Name        string  `json:"name"`
+	Category    string  `json:"category"` // Driver, Service, Process
+	DurationMs  int     `json:"duration_ms"`
 	DurationSec float64 `json:"duration_sec"`
-	Path        string `json:"path,omitempty"`
-	Description string `json:"description"`
+	Path        string  `json:"path,omitempty"`
+	Description string  `json:"description"`
+	Source      string  `json:"source,omitempty"`
+	Count       int     `json:"count,omitempty"`
+}
+
+// BootNetworkFinding is evidence of a network, domain, SMB, DNS, or GPO delay
+// observed during the measured boot. Source makes it explicit whether the
+// evidence came from ETL analysis or from a Windows event log fallback.
+type BootNetworkFinding struct {
+	Provider    string    `json:"provider"`
+	EventID     int64     `json:"event_id"`
+	TimeCreated time.Time `json:"time_created"`
+	DurationMs  int       `json:"duration_ms"`
+	Target      string    `json:"target,omitempty"`
+	Message     string    `json:"message"`
+	Source      string    `json:"source"`
 }
 
 // AdvancedAutorunsItem represents a startup item from 30+ locations (Autoruns style)

@@ -485,17 +485,36 @@ func buildHTMLContent(r *models.HealthReport) string {
 
 	// Deep WPR Boot Trace Details (if trace data exists)
 	if r.BootLogon.BootTrace.HasTraceData {
+		traceBadge := "Analyserad med WPA Exporter"
+		if r.BootLogon.BootTrace.AnalysisError != "" {
+			traceBadge = "ETL sparad – analys ofullständig"
+		}
 		sb.WriteString(fmt.Sprintf(`<div class="card" style="margin-bottom: 24px;">
     <div class="card-title">
       <span>🔬 Djupgående Boot-Spårning (Windows Performance Recorder)</span>
-      <span class="badge badge-ok">Analyserad</span>
+      <span class="badge badge-ok">%s</span>
     </div>
     <div class="stat-row"><span class="stat-label">Spårningsfil:</span><span class="stat-val" style="font-size:11px;"><code>%s</code></span></div>
     <div class="stat-row"><span class="stat-label">Filstorlek:</span><span class="stat-val">%s</span></div>
-    <div class="stat-row"><span class="stat-label">Inspelad:</span><span class="stat-val">%s</span></div>`,
+    <div class="stat-row"><span class="stat-label">Inspelad:</span><span class="stat-val">%s</span></div>
+    <div class="stat-row"><span class="stat-label">Analyskälla:</span><span class="stat-val">%s</span></div>`,
+			esc(traceBadge),
 			esc(r.BootLogon.BootTrace.TraceFilePath),
 			esc(r.BootLogon.BootTrace.TraceFileSize),
-			esc(r.BootLogon.BootTrace.TraceRecordedAt)))
+			esc(r.BootLogon.BootTrace.TraceRecordedAt),
+			esc(defaultIfEmpty(r.BootLogon.BootTrace.AnalysisSource, "ETL sparad – automatisk analys saknas"))))
+
+		if r.BootLogon.BootTrace.AnalysisError != "" {
+			sb.WriteString(fmt.Sprintf(`<div style="margin-top:10px;padding:10px;background:#fff7ed;border:1px solid #fdba74;border-radius:6px;color:#9a3412;"><strong>Analysnotering:</strong> %s</div>`, esc(r.BootLogon.BootTrace.AnalysisError)))
+		}
+
+		if len(r.BootLogon.BootTrace.TopProcesses) > 0 {
+			sb.WriteString(`<div style="margin-top:12px; font-size:12px; font-weight:600; color:var(--text-secondary);">Processer med mest CPU-tid enligt WPA Exporter:</div><div class="table-container"><table><thead><tr><th>Process</th><th>CPU-tid</th><th>Kontextväxlingar</th><th>Källa</th></tr></thead><tbody>`)
+			for _, p := range r.BootLogon.BootTrace.TopProcesses {
+				sb.WriteString(fmt.Sprintf(`<tr><td><strong>%s</strong></td><td>%d ms</td><td>%d</td><td>%s</td></tr>`, esc(p.Name), p.DurationMs, p.Count, esc(p.Source)))
+			}
+			sb.WriteString(`</tbody></table></div>`)
+		}
 
 		if len(r.BootLogon.BootTrace.SlowestDrivers) > 0 {
 			sb.WriteString(`<div style="margin-top:12px; font-size:12px; font-weight:600; color:var(--text-secondary);">Mätta Drivrutiner:</div>
@@ -511,6 +530,18 @@ func buildHTMLContent(r *models.HealthReport) string {
     <div class="table-container"><table><thead><tr><th>Tjänst</th><th>Kategori</th><th>Starttid</th><th>Sökväg</th></tr></thead><tbody>`)
 			for _, s := range r.BootLogon.BootTrace.SlowestServices {
 				sb.WriteString(fmt.Sprintf(`<tr><td><strong>%s</strong></td><td><span class="badge badge-info">%s</span></td><td style="color:#38bdf8; font-weight:600;">%d ms</td><td style="font-size:10px;"><code>%s</code></td></tr>`, esc(s.Name), esc(s.Category), s.DurationMs, esc(defaultIfEmpty(s.Path, "-"))))
+			}
+			sb.WriteString(`</tbody></table></div>`)
+		}
+
+		if len(r.BootLogon.BootTrace.NetworkFindings) > 0 {
+			sb.WriteString(`<div style="margin-top:12px; font-size:12px; font-weight:600; color:var(--text-secondary);">Nätverks-, domän- och timeout-händelser under uppstarten:</div><div class="table-container"><table><thead><tr><th>Tid</th><th>Källa</th><th>Event</th><th>Varaktighet</th><th>Meddelande</th></tr></thead><tbody>`)
+			for _, n := range r.BootLogon.BootTrace.NetworkFindings {
+				duration := "-"
+				if n.DurationMs > 0 {
+					duration = fmt.Sprintf("%d ms", n.DurationMs)
+				}
+				sb.WriteString(fmt.Sprintf(`<tr><td>%s</td><td>%s</td><td>%d</td><td>%s</td><td>%s</td></tr>`, esc(n.TimeCreated.Format("15:04:05")), esc(n.Provider), n.EventID, duration, esc(n.Message)))
 			}
 			sb.WriteString(`</tbody></table></div>`)
 		}

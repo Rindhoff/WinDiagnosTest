@@ -11,6 +11,8 @@ import {
   ClearTraceData,
   CancelWPRBootTrace,
   StopWPRBootTrace,
+  AnalyzeExistingWPRTrace,
+  OpenWPTInstallGuide,
   OpenTraceFolder,
   OpenTraceInWPA,
   GenerateAndOpenGPOReport
@@ -719,6 +721,11 @@ app.innerHTML = `
             <span class="stat-label">Aktuell spårningsstatus:</span>
             <span class="stat-val" id="boot-wpr-status-text" style="font-weight:600;">-</span>
           </div>
+          <div class="stat-row" style="margin-bottom:10px;">
+            <span class="stat-label">Automatisk ETL-analys:</span>
+            <span class="stat-val" id="boot-wpaexporter-status">Kontrollerar WPA Exporter...</span>
+          </div>
+          <div id="boot-wpr-analysis-error" style="display:none; margin:10px 0; padding:10px 14px; background:rgba(245,158,11,.12); border:1px solid rgba(245,158,11,.35); border-radius:6px; color:#fbbf24; font-size:12px;"></div>
 
           <!-- Pending Reboot Banner -->
           <div id="boot-wpr-reboot-banner" style="display:none; margin-top:10px; margin-bottom:12px; padding:12px 16px; background:rgba(245, 158, 11, 0.15); border-radius:8px; border:1px solid rgba(245, 158, 11, 0.4);">
@@ -769,6 +776,12 @@ app.innerHTML = `
             <button class="btn btn-secondary btn-sm" id="btn-open-trace-wpa" style="display:none; align-items:center; gap:6px;">
               <span>📊 Öppna i WPA</span>
             </button>
+            <button class="btn btn-fix btn-sm" id="btn-analyze-wpr" style="display:none; align-items:center; gap:6px;">
+              <span>🔎 Analysera ETL igen</span>
+            </button>
+            <button class="btn btn-secondary btn-sm" id="btn-install-wpt" style="display:none; align-items:center; gap:6px;">
+              <span>⬇️ Installera Windows Performance Toolkit</span>
+            </button>
             <button class="btn btn-danger-outline btn-sm" id="btn-cancel-wpr" style="display:none; align-items:center; gap:6px;">
               <span>🛑 Avbryt schemaläggning</span>
             </button>
@@ -799,7 +812,7 @@ app.innerHTML = `
 
             <!-- Drivers and Services Breakdown Tables -->
             <div style="font-weight:600; font-size:13px; margin-bottom:8px; color:var(--sky-500);">
-              ⚡ Mätta Drivrutiner & Komponenter under uppstarten:
+              ⚡ Mätta processer, drivrutiner och tjänster under uppstarten:
             </div>
             <div class="table-wrapper" style="margin-bottom:12px;">
               <table>
@@ -815,6 +828,10 @@ app.innerHTML = `
                   <!-- Populated dynamically -->
                 </tbody>
               </table>
+            </div>
+            <div id="boot-wpr-network-section" style="display:none; margin-top:16px;">
+              <div style="font-weight:600; font-size:13px; margin-bottom:8px; color:var(--sky-500);">🌐 Nätverks-, domän- och timeout-händelser under uppstarten:</div>
+              <div class="table-wrapper"><table><thead><tr><th>Tid</th><th>Källa / Event</th><th>Varaktighet</th><th>Meddelande</th></tr></thead><tbody id="boot-wpr-network-tbody"></tbody></table></div>
             </div>
           </div>
         </div>
@@ -1112,6 +1129,21 @@ function setupEvents() {
   };
   document.querySelector('#btn-stop-wpr')?.addEventListener('click', handleStopWpr);
   document.querySelector('#btn-stop-wpr-banner')?.addEventListener('click', handleStopWpr);
+
+  document.querySelector('#btn-analyze-wpr')?.addEventListener('click', async () => {
+    showToast('Analyserar den sparade ETL-filen med WPA Exporter...', 'info');
+    try {
+      const res = await AnalyzeExistingWPRTrace();
+      showToast(res.message, res.success ? 'success' : 'error');
+      runDiagnosticScan();
+    } catch (err: any) {
+      showToast(`WPA Exporter: ${err}`, 'error');
+    }
+  });
+
+  document.querySelector('#btn-install-wpt')?.addEventListener('click', () => {
+    OpenWPTInstallGuide();
+  });
 
   // WPR Clear Trace button
   document.querySelector('#btn-clear-trace')?.addEventListener('click', async () => {
@@ -1881,16 +1913,32 @@ function renderBootTab(boot: models.BootLogonReport) {
   const btnStopWpr = document.querySelector('#btn-stop-wpr') as HTMLElement;
   const btnOpenFolder = document.querySelector('#btn-open-trace-folder') as HTMLElement;
   const btnOpenWPA = document.querySelector('#btn-open-trace-wpa') as HTMLElement;
+  const btnAnalyzeWpr = document.querySelector('#btn-analyze-wpr') as HTMLElement;
+  const btnInstallWpt = document.querySelector('#btn-install-wpt') as HTMLElement;
   const btnCancelWpr = document.querySelector('#btn-cancel-wpr') as HTMLElement;
   const btnClearTrace = document.querySelector('#btn-clear-trace') as HTMLElement;
   const wprRecordingBanner = document.querySelector('#boot-wpr-recording-banner') as HTMLElement;
   const wprResultsSection = document.querySelector('#boot-wpr-results-section') as HTMLElement;
   const wprDriversTbody = document.querySelector('#boot-wpr-drivers-tbody')!;
+  const wpaExporterStatus = document.querySelector('#boot-wpaexporter-status') as HTMLElement;
+  const analysisError = document.querySelector('#boot-wpr-analysis-error') as HTMLElement;
+  const networkSection = document.querySelector('#boot-wpr-network-section') as HTMLElement;
+  const networkTbody = document.querySelector('#boot-wpr-network-tbody') as HTMLElement;
 
   if (boot.boot_trace) {
     wprStatusText.textContent = boot.boot_trace.status_message || 'Redo.';
+    if (wpaExporterStatus) {
+      wpaExporterStatus.textContent = boot.boot_trace.is_wpa_exporter_available
+        ? `✅ WPA Exporter: ${boot.boot_trace.wpa_exporter_path || 'installerad'}`
+        : '⚠️ WPA Exporter saknas – ETL sparas, men automatisk djupanalys kräver Windows Performance Toolkit.';
+    }
+    if (btnInstallWpt) btnInstallWpt.style.display = boot.boot_trace.is_wpa_exporter_available ? 'none' : 'inline-flex';
+    if (analysisError) {
+      analysisError.textContent = boot.boot_trace.analysis_error || boot.boot_trace.last_error || '';
+      analysisError.style.display = analysisError.textContent ? 'block' : 'none';
+    }
     
-    if (boot.boot_trace.is_recording) {
+    if (boot.boot_trace.can_stop) {
       wprBadge.className = 'badge badge-critical';
       wprBadge.textContent = '🔴 Spelar in';
       if (wprRecordingBanner) wprRecordingBanner.style.display = 'block';
@@ -1900,6 +1948,7 @@ function renderBootTab(boot: models.BootLogonReport) {
       if (btnCancelWpr) btnCancelWpr.style.display = 'inline-flex';
       if (btnOpenFolder) btnOpenFolder.style.display = 'none';
       if (btnOpenWPA) btnOpenWPA.style.display = 'none';
+      if (btnAnalyzeWpr) btnAnalyzeWpr.style.display = 'none';
       if (btnClearTrace) btnClearTrace.style.display = 'none';
     } else if (boot.boot_trace.is_configured) {
       wprBadge.className = 'badge badge-warning';
@@ -1911,10 +1960,24 @@ function renderBootTab(boot: models.BootLogonReport) {
       if (btnCancelWpr) btnCancelWpr.style.display = 'inline-flex';
       if (btnOpenFolder) btnOpenFolder.style.display = 'none';
       if (btnOpenWPA) btnOpenWPA.style.display = 'none';
+      if (btnAnalyzeWpr) btnAnalyzeWpr.style.display = 'none';
       if (btnClearTrace) btnClearTrace.style.display = 'none';
+    } else if (boot.boot_trace.state === 'failed') {
+      wprBadge.className = 'badge badge-critical';
+      wprBadge.textContent = '❌ Misslyckades';
+      if (wprRecordingBanner) wprRecordingBanner.style.display = 'none';
+      if (btnStartWprReboot) btnStartWprReboot.style.display = 'inline-flex';
+      if (btnStartWprManual) btnStartWprManual.style.display = 'inline-flex';
+      if (btnStopWpr) btnStopWpr.style.display = 'none';
+      if (btnCancelWpr) btnCancelWpr.style.display = 'inline-flex';
+      if (btnOpenFolder) btnOpenFolder.style.display = boot.boot_trace.has_trace_data ? 'inline-flex' : 'none';
+      if (btnOpenWPA) btnOpenWPA.style.display = boot.boot_trace.has_trace_data && boot.boot_trace.is_wpa_available ? 'inline-flex' : 'none';
+      if (btnAnalyzeWpr) btnAnalyzeWpr.style.display = boot.boot_trace.has_trace_data && boot.boot_trace.is_wpa_exporter_available ? 'inline-flex' : 'none';
+      if (btnClearTrace) btnClearTrace.style.display = boot.boot_trace.has_trace_data ? 'inline-flex' : 'none';
     } else if (boot.boot_trace.has_trace_data) {
-      wprBadge.className = 'badge badge-ok';
-      wprBadge.textContent = '✅ Analyserad';
+      const pendingAnalysis = boot.boot_trace.state === 'captured_unanalyzed' || !!boot.boot_trace.analysis_error;
+      wprBadge.className = pendingAnalysis ? 'badge badge-warning' : 'badge badge-ok';
+      wprBadge.textContent = pendingAnalysis ? '⚠️ ETL sparad' : '✅ Analyserad';
       if (wprRecordingBanner) wprRecordingBanner.style.display = 'none';
       if (btnStartWprReboot) {
         btnStartWprReboot.style.display = 'inline-flex';
@@ -1928,6 +1991,7 @@ function renderBootTab(boot: models.BootLogonReport) {
       if (btnCancelWpr) btnCancelWpr.style.display = 'none';
       if (btnOpenFolder) btnOpenFolder.style.display = 'inline-flex';
       if (btnOpenWPA) btnOpenWPA.style.display = boot.boot_trace.is_wpa_available ? 'inline-flex' : 'none';
+      if (btnAnalyzeWpr) btnAnalyzeWpr.style.display = boot.boot_trace.is_wpa_exporter_available ? 'inline-flex' : 'none';
       if (btnClearTrace) btnClearTrace.style.display = 'inline-flex';
     } else {
       wprBadge.className = 'badge badge-ok';
@@ -1945,6 +2009,7 @@ function renderBootTab(boot: models.BootLogonReport) {
       if (btnCancelWpr) btnCancelWpr.style.display = 'none';
       if (btnOpenFolder) btnOpenFolder.style.display = 'none';
       if (btnOpenWPA) btnOpenWPA.style.display = 'none';
+      if (btnAnalyzeWpr) btnAnalyzeWpr.style.display = 'none';
       if (btnClearTrace) btnClearTrace.style.display = 'none';
     }
 
@@ -1958,7 +2023,7 @@ function renderBootTab(boot: models.BootLogonReport) {
       const tsElem = document.querySelector('#boot-wpr-timestamp');
       if (tsElem) tsElem.textContent = boot.boot_trace.trace_recorded_at || '';
 
-      const drivers = [...(boot.boot_trace.slowest_drivers || []), ...(boot.boot_trace.slowest_services || [])];
+      const drivers = [...(boot.boot_trace.top_processes || []), ...(boot.boot_trace.slowest_drivers || []), ...(boot.boot_trace.slowest_services || [])];
       if (drivers.length > 0 && wprDriversTbody) {
         wprDriversTbody.innerHTML = drivers.map(d => `
           <tr>
@@ -1968,6 +2033,20 @@ function renderBootTab(boot: models.BootLogonReport) {
             <td style="max-width:300px; font-size:11px; word-break:break-all;"><code>${escapeHtml(d.path || '-')}</code></td>
           </tr>
         `).join('');
+      } else if (wprDriversTbody) {
+        wprDriversTbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:var(--text-secondary);">Ingen automatisk analystabell finns ännu.</td></tr>';
+      }
+
+      const network = boot.boot_trace.network_findings || [];
+      if (networkSection) networkSection.style.display = network.length ? 'block' : 'none';
+      if (networkTbody && network.length) {
+        networkTbody.innerHTML = network.map(n => `
+          <tr>
+            <td style="white-space:nowrap;">${escapeHtml(new Date(n.time_created).toLocaleTimeString('sv-SE'))}</td>
+            <td><strong>${escapeHtml(n.provider)}</strong><br/><span class="badge badge-info">Event ${n.event_id}</span></td>
+            <td>${n.duration_ms ? `${n.duration_ms} ms` : '-'}</td>
+            <td style="max-width:520px; font-size:11px;">${escapeHtml(n.message)}</td>
+          </tr>`).join('');
       }
     } else {
       if (wprResultsSection) wprResultsSection.style.display = 'none';

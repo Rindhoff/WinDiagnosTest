@@ -86,6 +86,16 @@ func (a *App) StopWPRBootTrace() models.FixActionResult {
 	return collectors.StopAndAnalyzeWPRBootTrace()
 }
 
+// AnalyzeExistingWPRTrace retries analysis of an already captured ETL file.
+func (a *App) AnalyzeExistingWPRTrace() models.FixActionResult {
+	return collectors.AnalyzeExistingWPRTrace()
+}
+
+// OpenWPTInstallGuide opens Microsoft's official ADK/WPT installation guide.
+func (a *App) OpenWPTInstallGuide() {
+	wailsRuntime.BrowserOpenURL(a.ctx, "https://learn.microsoft.com/windows-hardware/get-started/adk-install")
+}
+
 // OpenTraceFolder opens the trace directory or selects latest .etl file in Explorer
 func (a *App) OpenTraceFolder() (string, error) {
 	return collectors.OpenTraceFolder()

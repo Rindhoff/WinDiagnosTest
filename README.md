@@ -1,4 +1,21 @@
-# README
+# WinHealth
+
+## Djupgående boot-spårning
+
+WinHealth använder Windows inbyggda `wpr.exe` för att spela in en ETW-spårning
+över en omstart. För automatisk analys av ETL-filen krävs **WPA Exporter**, som
+installeras med Microsoft Windows Performance Toolkit (WPT) via Windows ADK.
+Programmet identifierar `wpaexporter.exe` och `wpa.exe` automatiskt i normala
+installationssökvägar och visar tydligt om WPT saknas.
+
+WPA Exporter kan inte återdistribueras som en del av WinHealth. Installera WPT
+från [Microsofts officiella ADK-sida](https://learn.microsoft.com/windows-hardware/get-started/adk-install).
+
+Flödet är: schemalägg boot-profiler → starta om → verifiera aktiv WPR-inspelning
+→ spara en unik ETL-fil → analysera processernas CPU-tid med WPA Exporter.
+Nätverks-, domän-, DNS-, SMB- och GPO-fel kompletteras från Windows eventloggar
+inom den uppmätta boot-sessionen. Rapporten anger alltid källan och hittar inte
+på mätvärden när ETL-analys saknas.
 
 ## About
 

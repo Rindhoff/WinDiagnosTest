@@ -1,6 +1,7 @@
 package collectors
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"time"
 	"unsafe"
 	"winhealth/pkg/models"
+
+	"golang.org/x/sys/windows/registry"
 )
 
 var (
@@ -41,6 +44,8 @@ type SHELLEXECUTEINFO struct {
 const (
 	SEE_MASK_NOCLOSEPROCESS = 0x00000040
 	SW_HIDE                 = 0
+	waitTimeout             = 258
+	stillActive             = 259
 )
 
 func runElevatedProcessWait(exePath string, args string) (uint32, error) {
@@ -72,9 +77,20 @@ func runElevatedProcessWait(exePath string, args string) (uint32, error) {
 
 	if info.hProcess != 0 {
 		defer syscall.CloseHandle(info.hProcess)
-		_, _ = syscall.WaitForSingleObject(info.hProcess, 30000)
+		waitResult, waitErr := syscall.WaitForSingleObject(info.hProcess, uint32((5*time.Minute)/time.Millisecond))
+		if waitErr != nil {
+			return 1, fmt.Errorf("kunde inte vänta på den upphöjda processen: %w", waitErr)
+		}
+		if waitResult == waitTimeout {
+			return 1, fmt.Errorf("den upphöjda processen överskred tidsgränsen 5 minuter")
+		}
 		var exitCode uint32
-		_ = syscall.GetExitCodeProcess(info.hProcess, &exitCode)
+		if err := syscall.GetExitCodeProcess(info.hProcess, &exitCode); err != nil {
+			return 1, fmt.Errorf("kunde inte läsa processens slutkod: %w", err)
+		}
+		if exitCode == stillActive {
+			return 1, fmt.Errorf("den upphöjda processen avslutades inte")
+		}
 		return exitCode, nil
 	}
 
@@ -94,20 +110,32 @@ func GetSystemBootTime() time.Time {
 
 // WPRStateMeta persists boot trace scheduling state across reboots
 type WPRStateMeta struct {
-	IsConfigured bool      `json:"is_configured"`
-	Profile      string    `json:"profile"`
-	ScheduledAt  time.Time `json:"scheduled_at"`
-	Status       string    `json:"status"` // "scheduled", "completed", "cancelled", "reboot_completed"
-	AutoResume   bool      `json:"auto_resume"`
+	Version        int       `json:"version"`
+	AttemptID      string    `json:"attempt_id"`
+	IsConfigured   bool      `json:"is_configured"`
+	Profile        string    `json:"profile"`
+	Profiles       []string  `json:"profiles,omitempty"`
+	ScheduledAt    time.Time `json:"scheduled_at"`
+	BootTimeBefore time.Time `json:"boot_time_before"`
+	TraceFilePath  string    `json:"trace_file_path"`
+	Status         string    `json:"status"` // scheduled, recording, merging, captured_unanalyzed, completed, failed, cancelled
+	AutoResume     bool      `json:"auto_resume"`
+	LastError      string    `json:"last_error,omitempty"`
+	CommandOutput  string    `json:"command_output,omitempty"`
 }
 
 // BootTraceSummaryMeta persists analyzed trace results
 type BootTraceSummaryMeta struct {
-	TraceFilePath   string                  `json:"trace_file_path"`
-	TraceFileSize   string                  `json:"trace_file_size"`
-	TraceRecordedAt string                  `json:"trace_recorded_at"`
-	SlowestDrivers  []models.BootTimingItem `json:"slowest_drivers"`
-	SlowestServices []models.BootTimingItem `json:"slowest_services"`
+	TraceFilePath   string                      `json:"trace_file_path"`
+	TraceFileSize   string                      `json:"trace_file_size"`
+	TraceRecordedAt string                      `json:"trace_recorded_at"`
+	SlowestDrivers  []models.BootTimingItem     `json:"slowest_drivers"`
+	SlowestServices []models.BootTimingItem     `json:"slowest_services"`
+	TopProcesses    []models.BootTimingItem     `json:"top_processes,omitempty"`
+	NetworkFindings []models.BootNetworkFinding `json:"network_findings,omitempty"`
+	AnalysisSource  string                      `json:"analysis_source,omitempty"`
+	AnalysisError   string                      `json:"analysis_error,omitempty"`
+	AttemptID       string                      `json:"attempt_id,omitempty"`
 }
 
 func getTraceStorageDir() string {
@@ -138,12 +166,13 @@ func loadWPRState() WPRStateMeta {
 	return state
 }
 
-func saveWPRState(state WPRStateMeta) {
+func saveWPRState(state WPRStateMeta) error {
 	path := getTraceStateFilePath()
 	data, err := json.MarshalIndent(state, "", "  ")
-	if err == nil {
-		_ = os.WriteFile(path, data, 0666)
+	if err != nil {
+		return err
 	}
+	return os.WriteFile(path, data, 0600)
 }
 
 func loadTraceSummary() (BootTraceSummaryMeta, bool) {
@@ -158,12 +187,13 @@ func loadTraceSummary() (BootTraceSummaryMeta, bool) {
 	return sum, false
 }
 
-func saveTraceSummary(sum BootTraceSummaryMeta) {
+func saveTraceSummary(sum BootTraceSummaryMeta) error {
 	path := getTraceSummaryFilePath()
 	data, err := json.MarshalIndent(sum, "", "  ")
-	if err == nil {
-		_ = os.WriteFile(path, data, 0666)
+	if err != nil {
+		return err
 	}
+	return os.WriteFile(path, data, 0600)
 }
 
 // RegisterRunOnceAutoResume registers WinHealth to start automatically after reboot
@@ -172,23 +202,22 @@ func RegisterRunOnceAutoResume() error {
 	if err != nil {
 		return err
 	}
-
-	psScript := fmt.Sprintf(`
-$regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce"
-Set-ItemProperty -Path $regPath -Name "WinHealthBootTraceReport" -Value '"%s"' -Force
-`, strings.ReplaceAll(exePath, `"`, `\"`))
-
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	return cmd.Run()
+	key, _, err := registry.CreateKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\RunOnce`, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer key.Close()
+	return key.SetStringValue("WinHealthBootTraceReport", fmt.Sprintf(`"%s"`, exePath))
 }
 
 // UnregisterRunOnceAutoResume removes the RunOnce entry
 func UnregisterRunOnceAutoResume() {
-	psScript := `Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce" -Name "WinHealthBootTraceReport" -ErrorAction SilentlyContinue`
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	_ = cmd.Run()
+	key, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\RunOnce`, registry.SET_VALUE)
+	if err != nil {
+		return
+	}
+	defer key.Close()
+	_ = key.DeleteValue("WinHealthBootTraceReport")
 }
 
 // GetWPRStatus queries wpr.exe to check if Windows Performance Recorder is ready, scheduled or recording
@@ -197,107 +226,166 @@ func GetWPRStatus() models.BootTraceStatus {
 		IsAvailable:     false,
 		IsConfigured:    false,
 		IsRecording:     false,
+		CanStop:         false,
 		HasTraceData:    false,
+		State:           "idle",
 		ProfileName:     "GeneralProfile",
 		StatusMessage:   "Windows Performance Recorder (wpr.exe) inte tillgänglig.",
 		SlowestDrivers:  make([]models.BootTimingItem, 0),
 		SlowestServices: make([]models.BootTimingItem, 0),
+		TopProcesses:    make([]models.BootTimingItem, 0),
+		NetworkFindings: make([]models.BootNetworkFinding, 0),
 	}
 
-	wprPath, err := exec.LookPath("wpr.exe")
-	if err != nil {
-		sysWpr := filepath.Join(os.Getenv("SystemRoot"), "System32", "wpr.exe")
-		if _, statErr := os.Stat(sysWpr); statErr == nil {
-			wprPath = sysWpr
-		} else {
-			return status
-		}
+	wprPath := findWPRExecutable()
+	if wprPath == "" {
+		return status
 	}
 	status.IsAvailable = true
-
-	// Check if WPA is installed
-	if _, wpaErr := exec.LookPath("wpa.exe"); wpaErr == nil {
-		status.IsWPAAvailable = true
-	} else {
-		wpaCandidates := []string{
-			`C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\wpa.exe`,
-			`C:\Program Files\Windows Kits\10\Windows Performance Toolkit\wpa.exe`,
-			`C:\Program Files (x86)\Windows Kits\11\Windows Performance Toolkit\wpa.exe`,
-		}
-		for _, cand := range wpaCandidates {
-			if _, statErr := os.Stat(cand); statErr == nil {
-				status.IsWPAAvailable = true
-				break
-			}
-		}
-	}
+	status.IsWPAAvailable = findWPA() != ""
+	status.WPAExporterPath = findWPAExporter()
+	status.IsWPAExporterAvailable = status.WPAExporterPath != ""
 
 	// 1. Query live wpr.exe -status
 	cmd := exec.Command(wprPath, "-status")
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	outBytes, _ := cmd.CombinedOutput()
+	cmd.SysProcAttr = hiddenWindowProcAttr()
+	outBytes, statusErr := cmd.CombinedOutput()
 	outStr := string(outBytes)
-
-	isRecording := strings.Contains(outStr, "WPR is recording") ||
-		strings.Contains(outStr, "Collector Name:") ||
-		strings.Contains(outStr, "WPR_initiated")
-
-	isAutologgerConfigured := strings.Contains(outStr, "Autologger is enabled")
+	isRecording, explicitlyNotRecording := parseWPRRecordingStatus(outStr)
 
 	stateMeta := loadWPRState()
 	bootTime := GetSystemBootTime()
-
-	// Check if reboot occurred since scheduled
-	rebootOccurred := false
-	if !stateMeta.ScheduledAt.IsZero() && bootTime.After(stateMeta.ScheduledAt) {
-		rebootOccurred = true
+	status.State = stateMeta.Status
+	if status.State == "" {
+		status.State = "idle"
 	}
+	if stateMeta.Profile != "" {
+		status.ProfileName = stateMeta.Profile
+	}
+	status.LastError = stateMeta.LastError
 
-	if isRecording {
-		status.IsRecording = true
-		status.IsConfigured = false
-		status.StatusMessage = "🔴 WPR Boot-spårning spelar in i bakgrunden just nu! Datorn har startats om med aktiv spårning. Klicka 'Spara & Slutför'."
-	} else if isAutologgerConfigured && !rebootOccurred {
-		status.IsConfigured = true
-		if stateMeta.Profile != "" {
-			status.ProfileName = stateMeta.Profile
-		}
-		status.StatusMessage = "⚡ Boot-spårning är schemalagd! Starta om datorn för att spela in uppstarten med Windows Performance Recorder."
-	} else {
-		if stateMeta.Status == "scheduled" && rebootOccurred {
+	referenceBoot := stateMeta.BootTimeBefore
+	if referenceBoot.IsZero() {
+		referenceBoot = stateMeta.ScheduledAt
+	}
+	rebootOccurred := !referenceBoot.IsZero() && bootTime.After(referenceBoot.Add(5*time.Second))
+
+	switch stateMeta.Status {
+	case "scheduled":
+		if !rebootOccurred {
+			status.IsConfigured = true
+			status.StatusMessage = "⚡ Boot-spårning är verifierat schemalagd. Starta om datorn för att påbörja ETW-inspelningen."
+		} else if isRecording {
+			stateMeta.Status = "recording"
 			stateMeta.IsConfigured = false
-			stateMeta.Status = "reboot_completed"
-			saveWPRState(stateMeta)
+			_ = saveWPRState(stateMeta)
+			status.State = "recording"
+			status.IsRecording = true
+			status.CanStop = true
+			status.StatusMessage = "🔴 WPR spelar in boot-spårningen. Spara och analysera när inloggningen är färdig."
+		} else if explicitlyNotRecording {
+			stateMeta.Status = "failed"
+			stateMeta.IsConfigured = false
+			stateMeta.AutoResume = false
+			stateMeta.LastError = recentKernelTraceError(bootTime)
+			if stateMeta.LastError == "" {
+				stateMeta.LastError = "Windows startades om men WPR:s boot-autologger startade inte."
+			}
+			_ = saveWPRState(stateMeta)
 			UnregisterRunOnceAutoResume()
+			status.State = "failed"
+			status.LastError = stateMeta.LastError
+			status.StatusMessage = "❌ Boot-spårningen startade inte efter omstart: " + stateMeta.LastError
+		} else {
+			status.CanStop = true
+			status.StatusMessage = "⚠️ Omstart upptäckt men WPR-status kunde inte verifieras. Försök spara spårningen för diagnostiskt felmeddelande."
 		}
-		status.IsConfigured = false
-		status.IsRecording = false
+	case "recording", "merging":
+		if explicitlyNotRecording {
+			stateMeta.Status = "failed"
+			stateMeta.IsConfigured = false
+			stateMeta.AutoResume = false
+			stateMeta.LastError = "WPR-inspelningen avslutades utan att en giltig ETL-fil sparades."
+			_ = saveWPRState(stateMeta)
+			status.State = "failed"
+			status.LastError = stateMeta.LastError
+			status.StatusMessage = "❌ " + stateMeta.LastError
+		} else {
+			status.IsRecording = isRecording
+			status.CanStop = true
+			status.StatusMessage = "🔴 WPR boot-spårning är redo att sparas och analyseras."
+		}
+	case "captured_unanalyzed":
+		status.StatusMessage = "⚠️ ETL-spårningen är sparad men väntar på WPA Exporter-analys."
+	case "completed":
+		status.StatusMessage = "✅ WPR-spårningen är sparad och analyserad med WPA Exporter."
+	case "failed":
+		status.StatusMessage = "❌ WPR-spårningen misslyckades: " + stateMeta.LastError
+	case "reboot_completed": // migrate legacy state from earlier builds
+		status.State = "failed"
+		status.LastError = "Äldre WinHealth-version registrerade omstart men skapade ingen verifierad ETL-fil."
+		status.StatusMessage = "❌ " + status.LastError
+	}
+	if statusErr != nil && status.State == "idle" {
+		status.LastError = strings.TrimSpace(outStr)
 	}
 
 	// 2. Check for completed trace file
-	traceDir := getTraceStorageDir()
-	latestTraceFile := filepath.Join(traceDir, "BootTrace_latest.etl")
+	latestTraceFile := stateMeta.TraceFilePath
+	if summary, ok := loadTraceSummary(); ok {
+		if latestTraceFile == "" {
+			latestTraceFile = summary.TraceFilePath
+		}
+		status.SlowestDrivers = summary.SlowestDrivers
+		status.SlowestServices = summary.SlowestServices
+		status.TopProcesses = summary.TopProcesses
+		status.NetworkFindings = summary.NetworkFindings
+		status.AnalysisSource = summary.AnalysisSource
+		status.AnalysisError = summary.AnalysisError
+	}
 	if fi, statErr := os.Stat(latestTraceFile); statErr == nil && fi.Size() > 1024 {
 		status.HasTraceData = true
 		status.TraceFilePath = latestTraceFile
 		status.TraceFileSize = formatBytes(fi.Size())
 		status.TraceRecordedAt = fi.ModTime().Format("2006-01-02 15:04:05")
-
-		if summary, ok := loadTraceSummary(); ok {
-			status.SlowestDrivers = summary.SlowestDrivers
-			status.SlowestServices = summary.SlowestServices
-		}
 	}
-
-	if !status.IsRecording && !status.IsConfigured {
-		if status.HasTraceData {
-			status.StatusMessage = fmt.Sprintf("✅ Djupgående WPR-kärnspårning sparad (%s).", status.TraceFileSize)
-		} else {
-			status.StatusMessage = "Redo att schemalägga djupgående WPR-bootspårning."
-		}
+	if status.State == "idle" && status.HasTraceData {
+		status.StatusMessage = fmt.Sprintf("✅ WPR-spårning sparad (%s).", status.TraceFileSize)
+	} else if status.State == "idle" {
+		status.StatusMessage = "Redo att schemalägga en verifierad WPR-bootspårning."
 	}
 
 	return status
+}
+
+func findWPRExecutable() string {
+	if p, err := exec.LookPath("wpr.exe"); err == nil {
+		return p
+	}
+	p := filepath.Join(os.Getenv("SystemRoot"), "System32", "wpr.exe")
+	if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+		return p
+	}
+	return ""
+}
+
+func parseWPRRecordingStatus(output string) (recording, explicitlyNotRecording bool) {
+	lower := strings.ToLower(output)
+	explicitlyNotRecording = strings.Contains(lower, "not recording") || strings.Contains(lower, "ingen inspelning")
+	recording = !explicitlyNotRecording && (strings.Contains(lower, "wpr is recording") ||
+		strings.Contains(lower, "collector name:") || strings.Contains(lower, "wpr_initiated"))
+	return recording, explicitlyNotRecording
+}
+
+func recentKernelTraceError(since time.Time) string {
+	start := since.UTC().Format(time.RFC3339)
+	ps := fmt.Sprintf(`$e = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Kernel-EventTracing/Admin'; StartTime=[datetime]::Parse('%s')} -ErrorAction SilentlyContinue | Where-Object { $_.Level -le 3 } | Select-Object -First 1
+if ($e) { (($e.Message -replace '\r?\n',' ') -replace '\s+',' ').Trim() }`, start)
+	out, err := RunPowerShellWithTimeout(ps, 8*time.Second)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // StartWPRBootTrace configures wpr.exe for boot tracing
@@ -314,29 +402,60 @@ func StartWPRBootTraceWithReboot(profile string, rebootNow bool) models.FixActio
 		Output:    make([]string, 0),
 	}
 
-	if profile == "" {
-		profile = "GeneralProfile"
-	}
-
-	wprPath, err := exec.LookPath("wpr.exe")
+	profiles, err := validatedBootProfiles(profile)
 	if err != nil {
-		wprPath = filepath.Join(os.Getenv("SystemRoot"), "System32", "wpr.exe")
+		r.Message = err.Error()
+		return r
+	}
+	profile = profiles[0]
+	wprPath := findWPRExecutable()
+	if wprPath == "" {
+		r.Message = "wpr.exe hittades inte på datorn."
+		return r
 	}
 
-	r.Output = append(r.Output, fmt.Sprintf("Konfigurerar Windows Performance Recorder för boot-spårning (Profil: %s)...", profile))
+	statusCmd := exec.Command(wprPath, "-status")
+	statusCmd.SysProcAttr = hiddenWindowProcAttr()
+	statusOut, _ := statusCmd.CombinedOutput()
+	if recording, _ := parseWPRRecordingStatus(string(statusOut)); recording {
+		r.Message = "En WPR-inspelning kör redan. Stoppa eller avbryt den innan en ny boot-spårning schemaläggs."
+		r.Output = append(r.Output, strings.TrimSpace(string(statusOut)))
+		return r
+	}
 
-	// 1. Direct attempt
-	cmd := exec.Command(wprPath, "-addboot", profile, "-filemode")
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	previous := loadWPRState()
+	if previous.Status != "" && previous.Status != "completed" && previous.Status != "cancelled" {
+		cleanup := exec.Command(wprPath, "-cancelboot")
+		cleanup.SysProcAttr = hiddenWindowProcAttr()
+		_, _ = cleanup.CombinedOutput()
+	}
+
+	attemptID := time.Now().Format("20060102_150405")
+	traceDir := getTraceStorageDir()
+	tracePath := filepath.Join(traceDir, "BootTrace_"+attemptID+".etl")
+
+	r.Output = append(r.Output, fmt.Sprintf("Konfigurerar WPR boot-spårning (%s)...", strings.Join(profiles, ", ")))
+
+	args := make([]string, 0, len(profiles)*2+4)
+	for _, p := range profiles {
+		args = append(args, "-addboot", p)
+	}
+	args = append(args, "-filemode", "-recordtempto", traceDir)
+	startCtx, startCancel := context.WithTimeout(context.Background(), time.Minute)
+	defer startCancel()
+	cmd := exec.CommandContext(startCtx, wprPath, args...)
+	cmd.SysProcAttr = hiddenWindowProcAttr()
 	outBytes, runErr := cmd.CombinedOutput()
+	if startCtx.Err() == context.DeadlineExceeded {
+		runErr = fmt.Errorf("wpr -addboot överskred tidsgränsen 1 minut")
+	}
 	outStr := strings.TrimSpace(string(outBytes))
+	configured := runErr == nil
 
-	configured := (runErr == nil && !strings.Contains(outStr, "Access is denied") && !strings.Contains(outStr, "0x80070005"))
-
-	// 2. If access denied, invoke elevated silently with ShellExecuteExW
 	if !configured {
-		r.Output = append(r.Output, "Begär administratörsbehörighet (UAC)...")
-		exitCode, elevErr := runElevatedProcessWait(wprPath, fmt.Sprintf("-addboot %s -filemode", profile))
+		r.Output = append(r.Output, "Direkt konfiguration misslyckades; begär administratörsbehörighet...")
+		elevatedArgs := strings.Join(args, " ")
+		exitCode, elevErr := runElevatedProcessWait(wprPath, elevatedArgs)
 		if elevErr == nil && exitCode == 0 {
 			configured = true
 		} else if elevErr != nil {
@@ -345,29 +464,95 @@ func StartWPRBootTraceWithReboot(profile string, rebootNow bool) models.FixActio
 	}
 
 	if configured {
-		_ = RegisterRunOnceAutoResume()
+		if !hasWPRBootAutologger() {
+			_ = exec.Command(wprPath, "-cancelboot").Run()
+			r.Message = "WPR returnerade utan fel, men någon WPR boot-autologger skapades inte i registret. Spårningen avbröts före omstart."
+			r.Output = append(r.Output, "Kontrollerade HKLM\\SYSTEM\\CurrentControlSet\\Control\\WMI\\Autologger efter WPR_initiated_Autologger.")
+			return r
+		}
+		if err := RegisterRunOnceAutoResume(); err != nil {
+			_ = exec.Command(wprPath, "-cancelboot").Run()
+			r.Message = fmt.Sprintf("WPR konfigurerades men automatisk återupptagning kunde inte registreras: %v", err)
+			return r
+		}
 
-		saveWPRState(WPRStateMeta{
-			IsConfigured: true,
-			Profile:      profile,
-			ScheduledAt:  time.Now(),
-			Status:       "scheduled",
-			AutoResume:   true,
-		})
+		state := WPRStateMeta{
+			Version: 2, AttemptID: attemptID, IsConfigured: true,
+			Profile: profile, Profiles: profiles, ScheduledAt: time.Now(),
+			BootTimeBefore: GetSystemBootTime(), TraceFilePath: tracePath,
+			Status: "scheduled", AutoResume: true, CommandOutput: outStr,
+		}
+		if err := saveWPRState(state); err != nil {
+			_ = exec.Command(wprPath, "-cancelboot").Run()
+			UnregisterRunOnceAutoResume()
+			r.Message = fmt.Sprintf("WPR konfigurerades men spårningens state kunde inte sparas: %v", err)
+			return r
+		}
 
 		r.Success = true
 		if rebootNow {
-			_ = exec.Command("shutdown.exe", "/r", "/t", "5", "/c", "WinHealth: Startar om datorn för att spela in WPR boot-spårning...").Run()
-			r.Message = "🚀 Boot-spårning är schemalagd! Datorn startar om om 5 sekunder. WinHealth öppnas automatiskt efter inloggning för att visa resultaten."
+			if err := exec.Command("shutdown.exe", "/r", "/t", "10", "/c", "WinHealth: Startar om datorn för verifierad WPR boot-spårning...").Run(); err != nil {
+				r.Success = false
+				r.Message = fmt.Sprintf("Spårningen schemalades men omstarten kunde inte initieras: %v", err)
+				return r
+			}
+			r.Message = "🚀 WPR-profilerna är schemalagda. Datorn startar om om 10 sekunder och WinHealth återupptar kontrollen efter inloggning."
 		} else {
-			r.Message = "✅ Boot-spårning är schemalagd! Starta om datorn när du vill spela in uppstarten."
+			r.Message = "✅ WPR-profilerna är schemalagda och verifierade. Starta om datorn för att påbörja inspelningen."
 		}
 		return r
 	}
 
 	r.Success = false
-	r.Message = "Kunde inte konfigurera WPR boot-spårning. Kontrollera att du kör WinHealth som administratör."
+	r.Output = append(r.Output, outStr)
+	r.Message = fmt.Sprintf("Kunde inte konfigurera WPR boot-spårning: %v", runErr)
 	return r
+}
+
+func hasWPRBootAutologger() bool {
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Control\WMI\Autologger`, registry.ENUMERATE_SUB_KEYS)
+	if err != nil {
+		return false
+	}
+	defer key.Close()
+	names, err := key.ReadSubKeyNames(-1)
+	if err != nil {
+		return false
+	}
+	for _, name := range names {
+		lower := strings.ToLower(name)
+		if strings.Contains(lower, "wpr_initiated") || strings.Contains(lower, "wpr boot") {
+			return true
+		}
+	}
+	return false
+}
+
+func validatedBootProfiles(requested string) ([]string, error) {
+	if requested == "" {
+		requested = "GeneralProfile"
+	}
+	allowed := map[string]bool{"GeneralProfile": true, "CPU": true, "Network": true, "DiskIO": true, "FileIO": true}
+	if !allowed[requested] {
+		return nil, fmt.Errorf("WPR-profilen %q stöds inte", requested)
+	}
+	profiles := []string{requested}
+	// GeneralProfile innehåller redan CPU- och diskinsamling. Att lägga till CPU
+	// och DiskIO igen skapar överlappande system collectors och kan ge
+	// NT Kernel Logger-kollisionen 0xC0000035 vid boot.
+	for _, p := range []string{"GeneralProfile", "Network", "FileIO"} {
+		found := false
+		for _, existing := range profiles {
+			if existing == p {
+				found = true
+				break
+			}
+		}
+		if !found {
+			profiles = append(profiles, p)
+		}
+	}
+	return profiles, nil
 }
 
 // CancelPendingReboot aborts a pending Windows shutdown / reboot
@@ -417,21 +602,36 @@ func CancelWPRBootTrace() models.FixActionResult {
 	outBytes, runErr := cmd.CombinedOutput()
 	outStr := strings.TrimSpace(string(outBytes))
 
-	if runErr != nil && strings.Contains(outStr, "Access is denied") {
-		_, _ = runElevatedProcessWait(wprPath, "-cancelboot")
+	if runErr != nil && (strings.Contains(outStr, "Access is denied") || strings.Contains(outStr, "0x80070005")) {
+		exitCode, elevatedErr := runElevatedProcessWait(wprPath, "-cancelboot")
+		if elevatedErr == nil && exitCode == 0 {
+			runErr = nil
+		} else {
+			runErr = fmt.Errorf("upphöjd cancelboot misslyckades (exit %d): %v", exitCode, elevatedErr)
+		}
 	}
 
 	if len(outStr) > 0 {
 		r.Output = append(r.Output, outStr)
 	}
 
-	saveWPRState(WPRStateMeta{
-		IsConfigured: false,
-		Profile:      "",
-		ScheduledAt:  time.Now(),
-		Status:       "cancelled",
-		AutoResume:   false,
-	})
+	state := loadWPRState()
+	state.Version = 2
+	state.IsConfigured = false
+	state.AutoResume = false
+	state.Status = "cancelled"
+	state.LastError = ""
+	state.CommandOutput = outStr
+	if runErr != nil {
+		state.Status = "failed"
+		state.LastError = fmt.Sprintf("WPR kunde inte återställas: %v (%s)", runErr, outStr)
+	}
+	_ = saveWPRState(state)
+
+	if runErr != nil {
+		r.Message = state.LastError
+		return r
+	}
 
 	r.Success = true
 	r.Message = "✅ WPR Boot-spårning och eventuell schemalagd omstart har avbrutits och återställts."
@@ -448,11 +648,16 @@ func ClearTraceData() models.FixActionResult {
 	}
 
 	traceDir := getTraceStorageDir()
-	latestTraceFile := filepath.Join(traceDir, "BootTrace_latest.etl")
 	summaryFile := getTraceSummaryFilePath()
 	stateFile := getTraceStateFilePath()
 
-	_ = os.Remove(latestTraceFile)
+	for _, pattern := range []string{"BootTrace_*.etl", "BootTrace_*.etl.NGENPDB"} {
+		matches, _ := filepath.Glob(filepath.Join(traceDir, pattern))
+		for _, match := range matches {
+			_ = os.Remove(match)
+		}
+	}
+	_ = os.RemoveAll(filepath.Join(traceDir, "Analysis"))
 	_ = os.Remove(summaryFile)
 	_ = os.Remove(stateFile)
 
@@ -470,61 +675,153 @@ func StopAndAnalyzeWPRBootTrace() models.FixActionResult {
 		Output:    make([]string, 0),
 	}
 
-	wprPath, err := exec.LookPath("wpr.exe")
-	if err != nil {
-		wprPath = filepath.Join(os.Getenv("SystemRoot"), "System32", "wpr.exe")
+	wprPath := findWPRExecutable()
+	if wprPath == "" {
+		r.Message = "wpr.exe hittades inte."
+		return r
 	}
 
-	traceDir := getTraceStorageDir()
-	outEtlPath := filepath.Join(traceDir, "BootTrace_latest.etl")
+	state := loadWPRState()
+	outEtlPath := state.TraceFilePath
+	if outEtlPath == "" {
+		outEtlPath = filepath.Join(getTraceStorageDir(), "BootTrace_"+time.Now().Format("20060102_150405")+".etl")
+		state.TraceFilePath = outEtlPath
+	}
+	state.Status = "merging"
+	state.LastError = ""
+	_ = saveWPRState(state)
 
 	r.Output = append(r.Output, fmt.Sprintf("Slutför och sammanställer boot-spårning till: %s...", outEtlPath))
 
-	cmd := exec.Command(wprPath, "-stopboot", outEtlPath, "WinHealth Diagnostic Boot Trace")
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, wprPath, "-stopboot", outEtlPath, "WinHealth Diagnostic Boot Trace")
+	cmd.SysProcAttr = hiddenWindowProcAttr()
 	outBytes, runErr := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		runErr = fmt.Errorf("wpr -stopboot överskred tidsgränsen 5 minuter")
+	}
 	outStr := strings.TrimSpace(string(outBytes))
 
 	if runErr != nil && (strings.Contains(outStr, "Access is denied") || strings.Contains(outStr, "0x80070005")) {
 		r.Output = append(r.Output, "Begär administratörsbehörighet för att spara spårningsfil...")
-		_, _ = runElevatedProcessWait(wprPath, fmt.Sprintf("-stopboot \"%s\" \"WinHealth Diagnostic Boot Trace\"", outEtlPath))
+		exitCode, elevatedErr := runElevatedProcessWait(wprPath, fmt.Sprintf("-stopboot \"%s\" \"WinHealth Diagnostic Boot Trace\"", outEtlPath))
+		if elevatedErr != nil || exitCode != 0 {
+			runErr = fmt.Errorf("elevated stopboot misslyckades (exit %d): %v", exitCode, elevatedErr)
+		} else {
+			runErr = nil
+		}
 	} else if len(outStr) > 0 {
 		r.Output = append(r.Output, outStr)
 	}
-
-	slowDrivers, slowServices := AnalyzeBootDriversAndServices()
+	if runErr != nil {
+		state.Status = "failed"
+		state.LastError = fmt.Sprintf("wpr -stopboot misslyckades: %v (%s)", runErr, outStr)
+		state.CommandOutput = outStr
+		_ = saveWPRState(state)
+		r.Message = state.LastError
+		return r
+	}
 
 	fi, statErr := os.Stat(outEtlPath)
-	if statErr != nil || fi.Size() == 0 {
+	if statErr != nil || fi.Size() < 1024 || (!state.ScheduledAt.IsZero() && fi.ModTime().Before(state.ScheduledAt)) {
+		state.Status = "failed"
+		state.LastError = "WPR rapporterade slutförande men skapade ingen ny, giltig ETL-fil."
+		_ = saveWPRState(state)
 		r.Success = false
-		r.Message = "⚠️ Ingen spårningsfil kunde sparas. Kontrollera att WPR spelade in och att WinHealth körs med administratörsrättigheter."
-		r.Output = append(r.Output, "ETL-filen skapades inte eller är tom.")
+		r.Message = "⚠️ " + state.LastError
+		r.Output = append(r.Output, "ETL-filen saknas, är för liten eller kommer från ett äldre försök.")
 		return r
 	}
 
 	fileSize := formatBytes(fi.Size())
+	analysis := analyzeWPRTrace(outEtlPath)
 	summary := BootTraceSummaryMeta{
 		TraceFilePath:   outEtlPath,
 		TraceFileSize:   fileSize,
 		TraceRecordedAt: time.Now().Format("2006-01-02 15:04:05"),
-		SlowestDrivers:  slowDrivers,
-		SlowestServices: slowServices,
+		SlowestDrivers:  analysis.SlowestDrivers,
+		SlowestServices: analysis.SlowestServices,
+		TopProcesses:    analysis.TopProcesses,
+		NetworkFindings: analysis.NetworkFindings,
+		AnalysisSource:  analysis.AnalysisSource,
+		AnalysisError:   analysis.AnalysisError,
+		AttemptID:       state.AttemptID,
 	}
-	saveTraceSummary(summary)
+	if err := saveTraceSummary(summary); err != nil {
+		state.Status = "captured_unanalyzed"
+		state.LastError = fmt.Sprintf("ETL sparades men analyssammanfattningen kunde inte skrivas: %v", err)
+		_ = saveWPRState(state)
+		r.Success = false
+		r.Message = state.LastError
+		return r
+	}
 
-	saveWPRState(WPRStateMeta{
-		IsConfigured: false,
-		Profile:      "",
-		ScheduledAt:  time.Now(),
-		Status:       "completed",
-		AutoResume:   false,
-	})
+	state.IsConfigured = false
+	state.AutoResume = false
+	state.CommandOutput = outStr
+	state.LastError = analysis.AnalysisError
+	if analysis.AnalysisError != "" {
+		state.Status = "captured_unanalyzed"
+	} else {
+		state.Status = "completed"
+	}
+	_ = saveWPRState(state)
 
 	UnregisterRunOnceAutoResume()
 
 	r.Success = true
-	r.Message = fmt.Sprintf("✅ Boot-spårning har sparats (%s) och analyserats framgångsrikt!", fileSize)
-	r.Output = append(r.Output, fmt.Sprintf("Identifierade %d drivrutiner och %d tjänster med uppstartsmätningar.", len(slowDrivers), len(slowServices)))
+	if analysis.AnalysisError != "" {
+		r.Message = fmt.Sprintf("⚠️ ETL-spårningen sparades (%s), men automatisk WPA-analys väntar: %s", fileSize, analysis.AnalysisError)
+	} else {
+		r.Message = fmt.Sprintf("✅ Boot-spårningen sparades (%s) och analyserades med WPA Exporter.", fileSize)
+	}
+	r.Output = append(r.Output, fmt.Sprintf("WPA identifierade %d CPU-intensiva processer; reservkällor gav %d drivrutiner, %d tjänster och %d nätverkshändelser.", len(analysis.TopProcesses), len(analysis.SlowestDrivers), len(analysis.SlowestServices), len(analysis.NetworkFindings)))
+	return r
+}
+
+// AnalyzeExistingWPRTrace retries WPA Exporter analysis for an already captured ETL.
+// This is useful when Windows Performance Toolkit was installed after capture.
+func AnalyzeExistingWPRTrace() models.FixActionResult {
+	r := models.FixActionResult{
+		ActionID: "analyze_wpr_trace", Timestamp: time.Now(), Title: "Analysera befintlig WPR-spårning",
+		Output: make([]string, 0),
+	}
+	state := loadWPRState()
+	tracePath := state.TraceFilePath
+	if tracePath == "" {
+		if summary, ok := loadTraceSummary(); ok {
+			tracePath = summary.TraceFilePath
+		}
+	}
+	fi, err := os.Stat(tracePath)
+	if err != nil || fi.Size() < 1024 {
+		r.Message = "Ingen giltig ETL-fil finns att analysera."
+		return r
+	}
+
+	analysis := analyzeWPRTrace(tracePath)
+	summary := BootTraceSummaryMeta{
+		TraceFilePath: tracePath, TraceFileSize: formatBytes(fi.Size()),
+		TraceRecordedAt: fi.ModTime().Format("2006-01-02 15:04:05"), AttemptID: state.AttemptID,
+		SlowestDrivers: analysis.SlowestDrivers, SlowestServices: analysis.SlowestServices,
+		TopProcesses: analysis.TopProcesses, NetworkFindings: analysis.NetworkFindings,
+		AnalysisSource: analysis.AnalysisSource, AnalysisError: analysis.AnalysisError,
+	}
+	if err := saveTraceSummary(summary); err != nil {
+		r.Message = fmt.Sprintf("Analysen kunde inte sparas: %v", err)
+		return r
+	}
+	state.LastError = analysis.AnalysisError
+	if analysis.AnalysisError != "" {
+		state.Status = "captured_unanalyzed"
+		r.Message = analysis.AnalysisError
+	} else {
+		state.Status = "completed"
+		r.Success = true
+		r.Message = fmt.Sprintf("ETL-filen analyserades med WPA Exporter: %d processer identifierades.", len(analysis.TopProcesses))
+	}
+	_ = saveWPRState(state)
 	return r
 }
 
@@ -535,10 +832,13 @@ func AnalyzeBootDriversAndServices() ([]models.BootTimingItem, []models.BootTimi
 
 	psScript := `$drvList = @()
 $srvList = @()
+$bootStart = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).LastBootUpTime
 
 # 1. Query Diagnostic-Performance Event 101 (Driver delays) & 102 (Service delays)
 try {
-    $degEvents = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Diagnostics-Performance/Operational'; Id=101,102,103} -MaxEvents 20 -ErrorAction SilentlyContinue
+    $filter = @{LogName='Microsoft-Windows-Diagnostics-Performance/Operational'; Id=101,102,103}
+    if ($bootStart) { $filter.StartTime = $bootStart }
+    $degEvents = Get-WinEvent -FilterHashtable $filter -MaxEvents 50 -ErrorAction SilentlyContinue
     if ($degEvents) {
         foreach ($e in $degEvents) {
             [xml]$xml = $e.ToXml()
@@ -556,6 +856,7 @@ try {
                         duration_sec = [math]::Round($ms / 1000, 2)
                         path = [string]$pathVal
                         description = "Drivrutin initierades på $ms ms vid uppstart."
+                        source = "Diagnostics-Performance Event Log"
                     }
                 } elseif ($e.Id -eq 102) {
                     $srvList += [PSCustomObject]@{
@@ -565,6 +866,7 @@ try {
                         duration_sec = [math]::Round($ms / 1000, 2)
                         path = [string]$pathVal
                         description = "Tjänst startades på $ms ms vid uppstart."
+                        source = "Diagnostics-Performance Event Log"
                     }
                 }
             }
@@ -572,49 +874,13 @@ try {
     }
 } catch {}
 
-# 2. Add System Kernel Boot Drivers if Diagnostics-Performance had few items
-if ($drvList.Count -lt 3) {
-    try {
-        $bootDrivers = Get-CimInstance Win32_SystemDriver -Filter "StartMode = 'Boot' OR StartMode = 'System'" -ErrorAction SilentlyContinue | Select-Object -First 8
-        foreach ($d in $bootDrivers) {
-            $drvList += [PSCustomObject]@{
-                name = $d.DisplayName
-                category = "Kärndrivrutin"
-                duration_ms = 420
-                duration_sec = 0.42
-                path = [string]$d.PathName
-                description = "Kärndrivrutin startades under tidig bootfas."
-            }
-        }
-    } catch {}
-}
-
-# 3. Add Autostart services
-if ($srvList.Count -lt 3) {
-    try {
-        $autoServices = Get-CimInstance Win32_Service -Filter "StartMode = 'Auto' AND State = 'Running'" -ErrorAction SilentlyContinue | Select-Object -First 8
-        foreach ($s in $autoServices) {
-            $srvList += [PSCustomObject]@{
-                name = $s.DisplayName
-                category = "Autostart Tjänst"
-                duration_ms = 680
-                duration_sec = 0.68
-                path = [string]$s.PathName
-                description = "Automatisk bakgrundstjänst startad vid inloggning."
-            }
-        }
-    } catch {}
-}
-
 [PSCustomObject]@{
     Drivers = $drvList
     Services = $srvList
 } | ConvertTo-Json -Compress
 `
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd.Output()
+	out, err := RunPowerShellWithTimeout(psScript, 20*time.Second)
 
 	if err == nil && len(out) > 0 {
 		type timingRes struct {
@@ -638,7 +904,7 @@ if ($srvList.Count -lt 3) {
 // OpenTraceFolder opens the directory containing the trace file in Windows File Explorer
 func OpenTraceFolder() (string, error) {
 	traceDir := getTraceStorageDir()
-	latestTraceFile := filepath.Join(traceDir, "BootTrace_latest.etl")
+	latestTraceFile := currentTraceFilePath()
 	if fi, err := os.Stat(latestTraceFile); err == nil && fi.Size() > 0 {
 		cmd := exec.Command("explorer.exe", fmt.Sprintf("/select,%s", latestTraceFile))
 		return latestTraceFile, cmd.Start()
@@ -649,32 +915,29 @@ func OpenTraceFolder() (string, error) {
 
 // OpenTraceInWPA opens the trace in Windows Performance Analyzer if installed
 func OpenTraceInWPA() (bool, string, error) {
-	traceDir := getTraceStorageDir()
-	latestTraceFile := filepath.Join(traceDir, "BootTrace_latest.etl")
+	latestTraceFile := currentTraceFilePath()
 	if fi, err := os.Stat(latestTraceFile); err != nil || fi.Size() == 0 {
 		return false, "", fmt.Errorf("ingen spårningsfil hittades (%s)", latestTraceFile)
 	}
 
-	wpaCandidates := []string{
-		"wpa.exe",
-		`C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\wpa.exe`,
-		`C:\Program Files\Windows Kits\10\Windows Performance Toolkit\wpa.exe`,
-		`C:\Program Files (x86)\Windows Kits\11\Windows Performance Toolkit\wpa.exe`,
-	}
-
-	for _, cand := range wpaCandidates {
-		wpaPath, err := exec.LookPath(cand)
-		if err == nil {
-			cmd := exec.Command(wpaPath, latestTraceFile)
-			return true, wpaPath, cmd.Start()
-		}
-		if _, statErr := os.Stat(cand); statErr == nil {
-			cmd := exec.Command(cand, latestTraceFile)
-			return true, cand, cmd.Start()
-		}
+	wpaPath := findWPA()
+	if wpaPath != "" {
+		cmd := exec.Command(wpaPath, latestTraceFile)
+		return true, wpaPath, cmd.Start()
 	}
 
 	return false, "", fmt.Errorf("Windows Performance Analyzer (wpa.exe) hittades inte på datorn")
+}
+
+func currentTraceFilePath() string {
+	state := loadWPRState()
+	if state.TraceFilePath != "" {
+		return state.TraceFilePath
+	}
+	if summary, ok := loadTraceSummary(); ok {
+		return summary.TraceFilePath
+	}
+	return ""
 }
 
 // GenerateGPOReport generates a complete HTML report using gpresult.exe and opens it

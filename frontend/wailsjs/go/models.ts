@@ -66,6 +66,49 @@ export namespace models {
 	        this.description = source["description"];
 	    }
 	}
+	export class BootNetworkFinding {
+	    provider: string;
+	    event_id: number;
+	    // Go type: time
+	    time_created: any;
+	    duration_ms: number;
+	    target?: string;
+	    message: string;
+	    source: string;
+
+	    static createFrom(source: any = {}) {
+	        return new BootNetworkFinding(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.provider = source["provider"];
+	        this.event_id = source["event_id"];
+	        this.time_created = this.convertValues(source["time_created"], null);
+	        this.duration_ms = source["duration_ms"];
+	        this.target = source["target"];
+	        this.message = source["message"];
+	        this.source = source["source"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class BootTimingItem {
 	    name: string;
 	    category: string;
@@ -73,6 +116,8 @@ export namespace models {
 	    duration_sec: number;
 	    path?: string;
 	    description: string;
+	    source?: string;
+	    count?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new BootTimingItem(source);
@@ -86,21 +131,32 @@ export namespace models {
 	        this.duration_sec = source["duration_sec"];
 	        this.path = source["path"];
 	        this.description = source["description"];
+	        this.source = source["source"];
+	        this.count = source["count"];
 	    }
 	}
 	export class BootTraceStatus {
 	    is_available: boolean;
 	    is_configured: boolean;
 	    is_recording: boolean;
+	    can_stop: boolean;
 	    has_trace_data: boolean;
+	    state: string;
 	    profile_name: string;
 	    trace_file_path?: string;
 	    trace_file_size?: string;
 	    trace_recorded_at?: string;
 	    status_message: string;
+	    last_error?: string;
 	    is_wpa_available: boolean;
+	    is_wpa_exporter_available: boolean;
+	    wpa_exporter_path?: string;
+	    analysis_source?: string;
+	    analysis_error?: string;
 	    slowest_drivers?: BootTimingItem[];
 	    slowest_services?: BootTimingItem[];
+	    top_processes?: BootTimingItem[];
+	    network_findings?: BootNetworkFinding[];
 	
 	    static createFrom(source: any = {}) {
 	        return new BootTraceStatus(source);
@@ -111,15 +167,24 @@ export namespace models {
 	        this.is_available = source["is_available"];
 	        this.is_configured = source["is_configured"];
 	        this.is_recording = source["is_recording"];
+	        this.can_stop = source["can_stop"];
 	        this.has_trace_data = source["has_trace_data"];
+	        this.state = source["state"];
 	        this.profile_name = source["profile_name"];
 	        this.trace_file_path = source["trace_file_path"];
 	        this.trace_file_size = source["trace_file_size"];
 	        this.trace_recorded_at = source["trace_recorded_at"];
 	        this.status_message = source["status_message"];
+	        this.last_error = source["last_error"];
 	        this.is_wpa_available = source["is_wpa_available"];
+	        this.is_wpa_exporter_available = source["is_wpa_exporter_available"];
+	        this.wpa_exporter_path = source["wpa_exporter_path"];
+	        this.analysis_source = source["analysis_source"];
+	        this.analysis_error = source["analysis_error"];
 	        this.slowest_drivers = this.convertValues(source["slowest_drivers"], BootTimingItem);
 	        this.slowest_services = this.convertValues(source["slowest_services"], BootTimingItem);
+	        this.top_processes = this.convertValues(source["top_processes"], BootTimingItem);
+	        this.network_findings = this.convertValues(source["network_findings"], BootNetworkFinding);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -270,8 +335,9 @@ export namespace models {
 		    return a;
 		}
 	}
-	
-	
+
+
+
 	export class CheckPointAdapter {
 	    name: string;
 	    description: string;
@@ -1079,4 +1145,3 @@ export namespace models {
 	
 
 }
-
