@@ -3,10 +3,8 @@ package collectors
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 	"winhealth/pkg/models"
 )
@@ -81,9 +79,7 @@ if ($appEvents) { $events += $appEvents }
 
 $events | ConvertTo-Json -Compress`
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, _ := cmd.Output()
+	out, _ := RunPowerShellWithTimeout(psScript, 10*time.Second)
 
 	type rawEvent struct {
 		LogName     string `json:"LogName"`

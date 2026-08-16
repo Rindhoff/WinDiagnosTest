@@ -2,6 +2,7 @@ package collectors
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -87,9 +88,7 @@ func detectCheckPointServices() []models.CheckPointService {
 		$_.DisplayName -match '(?i)(check.?point|trac.?srv|endpoint.?security)' 
 	} | Select-Object Name, DisplayName, Status, StartType | ConvertTo-Json -Compress`
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd.Output()
+	out, err := RunPowerShellWithTimeout(psScript, 8*time.Second)
 	if err != nil || len(out) == 0 {
 		return services
 	}
@@ -145,9 +144,7 @@ func detectCheckPointAdapters() []models.CheckPointAdapter {
 		$_.Name -match '(?i)(check.?point|securemote|cpvna)'
 	} | Select-Object Name, InterfaceDescription, Status, MacAddress, LinkSpeed | ConvertTo-Json -Compress`
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd.Output()
+	out, err := RunPowerShellWithTimeout(psScript, 8*time.Second)
 	if err != nil || len(out) == 0 {
 		return adapters
 	}
@@ -243,9 +240,7 @@ func scanCheckPointFiles() (string, []string, []string, string) {
 
 	// Try reading version from registry if available
 	psVerScript := `(Get-ItemProperty -Path 'HKLM:\SOFTWARE\CheckPoint\Endpoint Connect', 'HKLM:\SOFTWARE\WOW6432Node\CheckPoint\Endpoint Connect' -ErrorAction SilentlyContinue).ProductVersion`
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psVerScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	if out, err := cmd.Output(); err == nil {
+	if out, err := RunPowerShellWithTimeout(psVerScript, 4*time.Second); err == nil {
 		v := strings.TrimSpace(string(out))
 		if v != "" {
 			clientVer = v
@@ -354,7 +349,9 @@ func testGatewayConnectivity(host string, port int) models.GatewayTestResult {
 // detectVPNRoutes inspects the routing table for VPN interfaces
 func detectVPNRoutes() []string {
 	var routes []string
-	cmd := exec.Command("netstat", "-rn")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "netstat", "-rn")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	out, err := cmd.Output()
 	if err != nil {

@@ -4,10 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
+	"time"
 	"winhealth/pkg/models"
 )
 
@@ -65,9 +64,7 @@ if (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\PendingFil
     RebootReasons = $rebootReasons
 } | ConvertTo-Json -Compress`
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, _ := cmd.Output()
+	out, _ := RunPowerShellWithTimeout(psScript, 8*time.Second)
 
 	type rawInteg struct {
 		PnpErrors     interface{} `json:"PnpErrors"`

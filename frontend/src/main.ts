@@ -1471,14 +1471,14 @@ function renderHardwareTab(hw: models.HardwareReport) {
     disksContainer.innerHTML = hw.disks.map(d => `
       <div class="card">
         <div class="card-header">
-          <div class="card-title">Enhet ${d.drive_letter} (${d.model})</div>
+          <div class="card-title">Enhet ${escapeHtml(d.drive_letter)} (${escapeHtml(d.model)})</div>
           <span class="badge ${d.smart_healthy ? 'badge-ok' : 'badge-critical'}">
             ${d.smart_healthy ? 'SMART: Bra' : 'SMART: Varning'}
           </span>
         </div>
         <div class="stat-row">
           <span class="stat-label">Typ & Filsystem:</span>
-          <span class="stat-val">${d.media_type} (${d.file_system})</span>
+          <span class="stat-val">${escapeHtml(d.media_type)} (${escapeHtml(d.file_system)})</span>
         </div>
         <div class="stat-row">
           <span class="stat-label">Ledigt utrymme:</span>
@@ -1506,7 +1506,7 @@ function renderNetworkTab(net: models.NetworkReport) {
 
   document.querySelector('#net-internet-val')!.textContent = net.internet_ok ? 'Aktiv anslutning' : 'Ingen internetkontakt';
   document.querySelector('#net-gateway-val')!.textContent = net.default_gateway || 'Ingen';
-  document.querySelector('#net-gateway-ping')!.textContent = `${net.gateway_ping_ms} ms`;
+  document.querySelector('#net-gateway-ping')!.textContent = net.gateway_ping_ms >= 0 ? `${net.gateway_ping_ms} ms` : 'Svarar inte';
   document.querySelector('#net-proxy-val')!.textContent = net.proxy_configured ? net.proxy_details || 'Aktiv proxy' : 'Ingen proxy';
 
   // DNS
@@ -1527,12 +1527,12 @@ function renderNetworkTab(net: models.NetworkReport) {
   if (net.active_adapters && net.active_adapters.length > 0) {
     adaptersTbody.innerHTML = net.active_adapters.map(a => `
       <tr>
-        <td><span class="badge badge-info">${a.interface_type}</span></td>
+        <td><span class="badge badge-info">${escapeHtml(a.interface_type)}</span></td>
         <td><strong>${escapeHtml(a.name)}</strong></td>
-        <td><code>${a.ipv4_address || '-'}</code></td>
-        <td>${a.gateway || '-'}</td>
-        <td><code>${a.mac}</code></td>
-        <td><span class="badge badge-ok">${a.status}</span></td>
+        <td><code>${escapeHtml(a.ipv4_address || '-')}</code></td>
+        <td>${escapeHtml(a.gateway || '-')}</td>
+        <td><code>${escapeHtml(a.mac)}</code></td>
+        <td><span class="badge badge-ok">${escapeHtml(a.status)}</span></td>
       </tr>
     `).join('');
   }
@@ -1742,7 +1742,7 @@ function renderPerformanceTab(perf: models.PerformanceReport) {
     startupTbody.innerHTML = perf.startup_programs.map(s => `
       <tr>
         <td><strong>${escapeHtml(s.name)}</strong></td>
-        <td><span class="badge badge-info">${s.location}</span></td>
+        <td><span class="badge badge-info">${escapeHtml(s.location)}</span></td>
         <td style="max-width:350px; font-size:11px; word-break:break-all;"><code>${escapeHtml(s.command)}</code></td>
       </tr>
     `).join('');

@@ -89,9 +89,7 @@ $proxy = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersio
     Proxy = $proxy
 } | ConvertTo-Json -Depth 2 -Compress`
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, _ := cmd.Output()
+	out, _ := RunPowerShellWithTimeout(psScript, 8*time.Second)
 
 	type rawNet struct {
 		Adapters interface{} `json:"Adapters"`
@@ -157,14 +155,11 @@ $proxy = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersio
 
 	// 3. Ping Default Gateway if present
 	if report.DefaultGateway != "" {
-		start := time.Now()
-		conn, err := net.DialTimeout("tcp", report.DefaultGateway+":80", 1*time.Second)
-		if err == nil {
-			conn.Close()
-			report.GatewayPingMs = time.Since(start).Milliseconds()
+		reachable, lat := pingGateway(report.DefaultGateway)
+		if reachable {
+			report.GatewayPingMs = lat
 		} else {
-			// Try ICMP-like connection or fallback
-			report.GatewayPingMs = 2
+			report.GatewayPingMs = -1
 		}
 	}
 
@@ -191,4 +186,35 @@ $proxy = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersio
 	report.Score = score
 
 	return report
+}
+
+func pingGateway(gw string) (bool, int64) {
+	if gw == "" {
+		return false, 0
+	}
+	// Try TCP quick ping on port 53, 80, 443
+	for _, port := range []string{"53", "80", "443"} {
+		start := time.Now()
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort(gw, port), 400*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return true, time.Since(start).Milliseconds()
+		}
+	}
+
+	// Try ICMP via Windows ping command
+	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ping", "-n", "1", "-w", "800", gw)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	start := time.Now()
+	out, err := cmd.Output()
+	if err == nil {
+		outStr := string(out)
+		if strings.Contains(outStr, "TTL=") || strings.Contains(outStr, "Reply from") || strings.Contains(outStr, "Svar från") {
+			lat := time.Since(start).Milliseconds()
+			return true, lat
+		}
+	}
+	return false, 0
 }

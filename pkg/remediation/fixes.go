@@ -1,6 +1,7 @@
 package remediation
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -42,7 +43,8 @@ func ExecuteFix(actionID string) models.FixActionResult {
 func fixCheckPointVPN(r models.FixActionResult) models.FixActionResult {
 	r.Title = "Återställ Check Point VPN"
 
-	psScript := `$log = @()
+	psScript := `$errors = @()
+$log = @()
 $services = Get-Service | Where-Object { 
     $_.Name -match '(?i)(tracsrv|cpnet|check.?point|cpep|endpoint.?connect)' -or 
     $_.DisplayName -match '(?i)(check.?point|trac.?srv|endpoint.?security)' 
@@ -50,8 +52,12 @@ $services = Get-Service | Where-Object {
 
 if ($services) {
     foreach ($s in $services) {
-        $log += "Stoppar tjänsten $($s.DisplayName) ($($s.Name))..."
-        Stop-Service -Name $s.Name -Force -ErrorAction SilentlyContinue
+        $log += "Stoppar tjänsten $($s.DisplayName)..."
+        try {
+            Stop-Service -Name $s.Name -Force -ErrorAction Stop
+        } catch {
+            $errors += "Kunde inte stoppa $($s.Name): $($_.Exception.Message)"
+        }
     }
 } else {
     $log += "Inga Check Point-specifika tjänster behövde stoppas."
@@ -60,7 +66,9 @@ if ($services) {
 # Terminate hanging processes if any
 $procs = @('trac', 'cp_ep_agent', 'CPNetServices', 'vna_driver')
 foreach ($p in $procs) {
-    Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    try {
+        Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction Stop
+    } catch {}
 }
 
 # Reset Virtual Adapter if found
@@ -70,7 +78,11 @@ $adp = Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue | Where-Objec
 if ($adp) {
     foreach ($a in $adp) {
         $log += "Återställer nätverkskort: $($a.Name)..."
-        Restart-NetAdapter -Name $a.Name -ErrorAction SilentlyContinue
+        try {
+            Restart-NetAdapter -Name $a.Name -ErrorAction Stop
+        } catch {
+            $errors += "Kunde inte starta om kort $($a.Name): $($_.Exception.Message)"
+        }
     }
 }
 
@@ -79,21 +91,52 @@ Start-Sleep -Seconds 2
 if ($services) {
     foreach ($s in $services) {
         $log += "Startar tjänsten $($s.DisplayName)..."
-        Start-Service -Name $s.Name -ErrorAction SilentlyContinue
+        try {
+            Start-Service -Name $s.Name -ErrorAction Stop
+        } catch {
+            $errors += "Kunde inte starta $($s.Name): $($_.Exception.Message)"
+        }
     }
 }
 
-$log += "Check Point VPN-tjänster har framgångsrikt startats om och nätverkskortet har återställts."
-$log`
+$success = ($errors.Count -eq 0)
+if ($success) {
+    $log += "Check Point VPN-tjänster och nätverkskort har startats om."
+} else {
+    $log += "Varningar inträffade under återställning:"
+    $log += $errors
+}
+
+[PSCustomObject]@{
+    Success = $success
+    Output = $log
+    Message = if ($success) { "Check Point VPN har startats om framgångsrikt." } else { "Återställningen stötte på fel (kräver eventuellt förhöjda administratörsrättigheter)." }
+} | ConvertTo-Json -Compress`
 
 	out, err := runPowershell(psScript)
+	type rawResult struct {
+		Success bool     `json:"Success"`
+		Output  []string `json:"Output"`
+		Message string   `json:"Message"`
+	}
+
+	if err == nil && len(out) > 0 {
+		var rr rawResult
+		if err := json.Unmarshal([]byte(out), &rr); err == nil {
+			r.Success = rr.Success
+			r.Output = rr.Output
+			r.Message = rr.Message
+			return r
+		}
+	}
+
 	r.Output = strings.Split(out, "\n")
 	if err != nil {
 		r.Success = false
-		r.Message = "Kunde inte slutföra alla VPN-återställningssteg (kräver eventuellt administratörsrättigheter)."
+		r.Message = "Kunde inte slutföra alla VPN-återställningssteg."
 	} else {
 		r.Success = true
-		r.Message = "Check Point VPN har startats om och nätverksanslutningen har uppdaterats."
+		r.Message = "Check Point VPN-återställning slutfördes."
 	}
 	return r
 }
@@ -102,25 +145,62 @@ func fixFlushDNSWinsock(r models.FixActionResult) models.FixActionResult {
 	r.Title = "Återställ Nätverk, DNS & Winsock"
 
 	psScript := `$log = @()
+$errors = @()
+
 $log += "Tömmer DNS-cachen (ipconfig /flushdns)..."
-ipconfig /flushdns | Out-Null
+& ipconfig /flushdns 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { $errors += "ipconfig /flushdns returnerade felkod $LASTEXITCODE" }
+
 $log += "Registrerar om DNS (ipconfig /registerdns)..."
-ipconfig /registerdns | Out-Null
+& ipconfig /registerdns 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { $errors += "ipconfig /registerdns returnerade felkod $LASTEXITCODE" }
+
 $log += "Återställer Winsock-katalogen (netsh winsock reset)..."
-netsh winsock reset | Out-Null
+$winsockOut = & netsh winsock reset 2>&1
+if ($LASTEXITCODE -ne 0) { $errors += "netsh winsock reset misslyckades: $winsockOut" }
+
 $log += "Återställer TCP/IP-stacken (netsh int ip reset)..."
-netsh int ip reset | Out-Null
-$log += "Nätverksstacken har återställts framgångsrikt."
-$log`
+$ipOut = & netsh int ip reset 2>&1
+if ($LASTEXITCODE -ne 0) { $errors += "netsh int ip reset misslyckades: $ipOut" }
+
+$success = ($errors.Count -eq 0)
+if ($success) {
+    $log += "Nätverksstacken och DNS har återställts framgångsrikt."
+} else {
+    $log += "Fel uppstod vid återställning:"
+    $log += $errors
+}
+
+[PSCustomObject]@{
+    Success = $success
+    Output = $log
+    Message = if ($success) { "DNS-cache tömd och nätverksstacken har återställts utan fel." } else { "Nätverksåterställningen krävde administratörsbehörighet eller stötte på fel." }
+} | ConvertTo-Json -Compress`
 
 	out, err := runPowershell(psScript)
+	type rawResult struct {
+		Success bool     `json:"Success"`
+		Output  []string `json:"Output"`
+		Message string   `json:"Message"`
+	}
+
+	if err == nil && len(out) > 0 {
+		var rr rawResult
+		if err := json.Unmarshal([]byte(out), &rr); err == nil {
+			r.Success = rr.Success
+			r.Output = rr.Output
+			r.Message = rr.Message
+			return r
+		}
+	}
+
 	r.Output = strings.Split(out, "\n")
 	if err != nil {
 		r.Success = false
-		r.Message = "Nätverksåterställningen slutfördes med varningar (kräver eventuellt administratörsrättigheter)."
+		r.Message = "Nätverksåterställningen misslyckades (kräver administratörsrättigheter)."
 	} else {
 		r.Success = true
-		r.Message = "DNS-cache tömd och nätverksstacken har återställts utan fel."
+		r.Message = "Nätverksåterställning slutförd."
 	}
 	return r
 }
@@ -173,33 +253,66 @@ func fixResetWindowsUpdate(r models.FixActionResult) models.FixActionResult {
 	r.Title = "Återställ Windows Update"
 
 	psScript := `$log = @()
+$errors = @()
+
 $log += "Stoppar Windows Update- och BITS-tjänster..."
-Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
-Stop-Service -Name bits -Force -ErrorAction SilentlyContinue
-Stop-Service -Name cryptsvc -Force -ErrorAction SilentlyContinue
+try { Stop-Service -Name wuauserv -Force -ErrorAction Stop } catch { $errors += "Kunde inte stoppa wuauserv: $($_.Exception.Message)" }
+try { Stop-Service -Name bits -Force -ErrorAction Stop } catch { $errors += "Kunde inte stoppa bits: $($_.Exception.Message)" }
+try { Stop-Service -Name cryptsvc -Force -ErrorAction Stop } catch { $errors += "Kunde inte stoppa cryptsvc: $($_.Exception.Message)" }
 
 $log += "Rensar SoftwareDistribution nedladdningskö..."
 $downPath = "C:\Windows\SoftwareDistribution\Download"
 if (Test-Path $downPath) {
-    Remove-Item -Path "$downPath\*" -Recurse -Force -ErrorAction SilentlyContinue
+    try {
+        Remove-Item -Path "$downPath\*" -Recurse -Force -ErrorAction Stop
+    } catch {
+        $errors += "Kunde inte rensa nedladdningsmapp: $($_.Exception.Message)"
+    }
 }
 
 $log += "Startar om uppdateringstjänster..."
-Start-Service -Name cryptsvc -ErrorAction SilentlyContinue
-Start-Service -Name bits -ErrorAction SilentlyContinue
-Start-Service -Name wuauserv -ErrorAction SilentlyContinue
+try { Start-Service -Name cryptsvc -ErrorAction Stop } catch {}
+try { Start-Service -Name bits -ErrorAction Stop } catch {}
+try { Start-Service -Name wuauserv -ErrorAction Stop } catch {}
 
-$log += "Windows Update-komponenterna har återställts framgångsrikt."
-$log`
+$success = ($errors.Count -eq 0)
+if ($success) {
+    $log += "Windows Update-komponenterna har återställts framgångsrikt."
+} else {
+    $log += "Varningar vid återställning av Windows Update:"
+    $log += $errors
+}
+
+[PSCustomObject]@{
+    Success = $success
+    Output = $log
+    Message = if ($success) { "Windows Update-tjänsten och dess nedladdningskö har återställts." } else { "Kunde inte återställa alla komponenter (kräver administratörsrättigheter)." }
+} | ConvertTo-Json -Compress`
 
 	out, err := runPowershell(psScript)
+	type rawResult struct {
+		Success bool     `json:"Success"`
+		Output  []string `json:"Output"`
+		Message string   `json:"Message"`
+	}
+
+	if err == nil && len(out) > 0 {
+		var rr rawResult
+		if err := json.Unmarshal([]byte(out), &rr); err == nil {
+			r.Success = rr.Success
+			r.Output = rr.Output
+			r.Message = rr.Message
+			return r
+		}
+	}
+
 	r.Output = strings.Split(out, "\n")
 	if err != nil {
 		r.Success = false
 		r.Message = "Kunde inte återställa alla Windows Update-komponenter."
 	} else {
 		r.Success = true
-		r.Message = "Windows Update-tjänsten och dess nedladdningskö har återställts."
+		r.Message = "Windows Update-återställning slutförd."
 	}
 	return r
 }
@@ -208,10 +321,16 @@ func fixRunSfcScan(r models.FixActionResult) models.FixActionResult {
 	r.Title = "Verifiera Systemfiler (SFC)"
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", "Start-Process -FilePath 'sfc.exe' -ArgumentList '/scannow' -Verb RunAs")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	_ = cmd.Start()
+	err := cmd.Start()
+	if err != nil {
+		r.Success = false
+		r.Message = fmt.Sprintf("Kunde inte starta sfc.exe: %v", err)
+		r.Output = []string{"Misslyckades att starta System File Checker processen."}
+		return r
+	}
 
 	r.Success = true
-	r.Message = "Startade Windows System File Checker (sfc /scannow) i bakgrunden."
+	r.Message = "Startade Windows System File Checker (sfc /scannow) i bakgrunden med administratörsrättigheter."
 	r.Output = []string{
 		"System File Checker (sfc /scannow) startades med administratörsrättigheter.",
 		"Windows kommer att genomsöka skyddade systemfiler och ersätta skadade filer automatiskt.",
@@ -220,7 +339,9 @@ func fixRunSfcScan(r models.FixActionResult) models.FixActionResult {
 }
 
 func runPowershell(script string) (string, error) {
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
@@ -270,7 +391,8 @@ $res = $searcher.Search("IsInstalled=0")
 
 $found = $false
 foreach ($u in $res.Updates) {
-    if ($u.Title -eq $target -or $u.Title.Trim() -eq $target.Trim() -or $u.Title -like "*$target*") {
+    $kb = if ($u.KBArticleIDs -and $u.KBArticleIDs.Count -gt 0) { "KB" + $u.KBArticleIDs.Item(0) } else { "" }
+    if ($u.Title -eq $target -or $u.Title.Trim() -eq $target.Trim() -or ($kb -ne '' -and $kb -eq $target)) {
         $found = $true
         try {
             $u.IsHidden = $hide
@@ -284,7 +406,7 @@ foreach ($u in $res.Updates) {
         } catch {
             $errText = $_.Exception.Message
             $escapedTarget = $target.Replace("'", "''")
-            $elevateCode = "$sess = New-Object -ComObject Microsoft.Update.Session; $srch = $sess.CreateUpdateSearcher(); $srch.Online = $false; $r = $srch.Search('IsInstalled=0'); foreach($up in $r.Updates){ if($up.Title -like '*" + $escapedTarget + "*'){ $up.IsHidden = " + ($hide ? "$true" : "$false") + " } }"
+            $elevateCode = "$sess = New-Object -ComObject Microsoft.Update.Session; $srch = $sess.CreateUpdateSearcher(); $srch.Online = $false; $r = $srch.Search('IsInstalled=0'); foreach($up in $r.Updates){ if($up.Title -eq '" + $escapedTarget + "' -or $up.Title.Trim() -eq '" + $escapedTarget + "'){ $up.IsHidden = " + ($hide ? "$true" : "$false") + " } }"
             try {
                 Start-Process powershell -Verb RunAs -WindowStyle Hidden -Wait -ArgumentList "-NoProfile", "-Command", $elevateCode
                 if ($hide) {

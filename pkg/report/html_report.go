@@ -3,6 +3,7 @@ package report
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,11 @@ import (
 
 	"golang.org/x/sys/windows/registry"
 )
+
+// esc is a shorthand for html.EscapeString
+func esc(s string) string {
+	return html.EscapeString(s)
+}
 
 // GetDefaultDesktopDirectory returns the actual resolved desktop folder on Windows (handles OneDrive / Swedish folders)
 func GetDefaultDesktopDirectory() string {
@@ -263,7 +269,7 @@ func buildHTMLContent(r *models.HealthReport) string {
       <div class="score-lbl">%s</div>
     </div>
   </div>
-`, r.ComputerName, r.Timestamp.Format("2006-01-02 15:04"), scoreColor, scoreColor, r.ComputerName, r.OSVersion, r.OSBuild, r.Uptime, r.Timestamp.Format("2006-01-02 15:04:05"), r.TotalScore, r.ScoreRating))
+`, esc(r.ComputerName), esc(r.Timestamp.Format("2006-01-02 15:04")), scoreColor, scoreColor, esc(r.ComputerName), esc(r.OSVersion), esc(r.OSBuild), esc(r.Uptime), esc(r.Timestamp.Format("2006-01-02 15:04:05")), r.TotalScore, esc(r.ScoreRating)))
 
 	// Top Issues Section
 	if len(r.TopIssues) > 0 {
@@ -285,7 +291,7 @@ func buildHTMLContent(r *models.HealthReport) string {
     <div class="issue-item %s">
       <div class="issue-title">[%s] %s</div>
       <div class="issue-desc">%s</div>
-    </div>`, cls, issue.Category, issue.Title, issue.Description))
+    </div>`, cls, esc(issue.Category), esc(issue.Title), esc(issue.Description)))
 		}
 		sb.WriteString(`</div>`)
 	}
@@ -307,9 +313,9 @@ func buildHTMLContent(r *models.HealthReport) string {
     <div class="stat-row"><span class="stat-label">Klientversion:</span><span class="stat-val">%s</span></div>
     <div class="stat-row"><span class="stat-label">Installationskatalog:</span><span class="stat-val" style="font-size:11px;">%s</span></div>
     <div class="stat-row"><span class="stat-label">Rekommendation:</span><span class="stat-val">%s</span></div>`,
-			defaultIfEmpty(r.CheckPointVPN.ClientVersion, "Identifierad"),
-			defaultIfEmpty(r.CheckPointVPN.InstallPath, "Standard"),
-			r.CheckPointVPN.RecommendedAction))
+			esc(defaultIfEmpty(r.CheckPointVPN.ClientVersion, "Identifierad")),
+			esc(defaultIfEmpty(r.CheckPointVPN.InstallPath, "Standard")),
+			esc(r.CheckPointVPN.RecommendedAction)))
 
 		if len(r.CheckPointVPN.Services) > 0 {
 			sb.WriteString(`<div style="margin-top:12px; font-size:12px; font-weight:600; color:var(--text-secondary);">Tjänster:</div>`)
@@ -318,7 +324,7 @@ func buildHTMLContent(r *models.HealthReport) string {
 				if !s.IsHealthy {
 					icon = "🔴"
 				}
-				sb.WriteString(fmt.Sprintf(`<div class="stat-row"><span>%s %s</span><span>%s</span></div>`, icon, s.DisplayName, s.Status))
+				sb.WriteString(fmt.Sprintf(`<div class="stat-row"><span>%s %s</span><span>%s</span></div>`, icon, esc(s.DisplayName), esc(s.Status)))
 			}
 		}
 	} else {
@@ -337,7 +343,7 @@ func buildHTMLContent(r *models.HealthReport) string {
     <div class="stat-row"><span class="stat-label">Moderkort:</span><span class="stat-val">%s</span></div>
     <div class="stat-row"><span class="stat-label">RAM-användning:</span><span class="stat-val">%.1f GB av %.1f GB (%.0f%%)</span></div>
     <div class="progress-bar"><div class="progress-fill" style="width: %.0f%%;"></div></div>`,
-		getBadgeClass(r.Hardware.Severity), r.Hardware.Score, r.Hardware.CPUModel, r.Hardware.CPUCores, r.Hardware.Motherboard,
+		getBadgeClass(r.Hardware.Severity), r.Hardware.Score, esc(r.Hardware.CPUModel), r.Hardware.CPUCores, esc(r.Hardware.Motherboard),
 		r.Hardware.UsedRAMGB, r.Hardware.TotalRAMGB, r.Hardware.RAMUsagePct, r.Hardware.RAMUsagePct))
 
 	for _, d := range r.Hardware.Disks {
@@ -348,13 +354,13 @@ func buildHTMLContent(r *models.HealthReport) string {
 		sb.WriteString(fmt.Sprintf(`
     <div class="stat-row" style="margin-top:6px;"><span class="stat-label">Enhet %s (%s):</span><span class="stat-val">%s %.1f GB ledigt av %.1f GB</span></div>
     <div class="progress-bar"><div class="progress-fill" style="width: %.0f%%; background: %s;"></div></div>`,
-			d.DriveLetter, d.Model, smartIco, d.FreeGB, d.TotalGB, d.UsagePct, getProgressColor(d.UsagePct)))
+			esc(d.DriveLetter), esc(d.Model), smartIco, d.FreeGB, d.TotalGB, d.UsagePct, getProgressColor(d.UsagePct)))
 	}
 
 	if r.Hardware.Battery != nil && r.Hardware.Battery.Present {
 		sb.WriteString(fmt.Sprintf(`
     <div class="stat-row"><span class="stat-label">Batterihälsa:</span><span class="stat-val">%d%% (%s, Hälsa: %.0f%%)</span></div>`,
-			r.Hardware.Battery.ChargePercent, r.Hardware.Battery.Status, r.Hardware.Battery.HealthPct))
+			r.Hardware.Battery.ChargePercent, esc(r.Hardware.Battery.Status), r.Hardware.Battery.HealthPct))
 	}
 	sb.WriteString(`</div>`)
 
@@ -369,14 +375,14 @@ func buildHTMLContent(r *models.HealthReport) string {
     <div class="stat-row"><span class="stat-label">Standardgateway:</span><span class="stat-val">%s (Ping: %d ms)</span></div>`,
 		getBadgeClass(r.Network.Severity), r.Network.Score,
 		boolToStatus(r.Network.InternetOK, "Ansluten", "Ej ansluten"),
-		defaultIfEmpty(r.Network.DefaultGateway, "Ingen"), r.Network.GatewayPingMs))
+		esc(defaultIfEmpty(r.Network.DefaultGateway, "Ingen")), r.Network.GatewayPingMs))
 
 	for _, dns := range r.Network.DNSServers {
 		status := "🟢"
 		if !dns.Reachable {
 			status = "🔴"
 		}
-		sb.WriteString(fmt.Sprintf(`<div class="stat-row"><span class="stat-label">%s:</span><span class="stat-val">%s %d ms</span></div>`, dns.Server, status, dns.LatencyMs))
+		sb.WriteString(fmt.Sprintf(`<div class="stat-row"><span class="stat-label">%s:</span><span class="stat-val">%s %d ms</span></div>`, esc(dns.Server), status, dns.LatencyMs))
 	}
 	sb.WriteString(`</div>`)
 
@@ -397,13 +403,13 @@ func buildHTMLContent(r *models.HealthReport) string {
     <div class="stat-row"><span class="stat-label">Väntande omstarter:</span><span class="stat-val">%s</span></div>
   </div>`,
 		getBadgeClass(r.Security.Severity), r.Security.Score,
-		r.Security.AntivirusName, boolToStatus(r.Security.AntivirusEnabled, "Aktiv", "Inaktiv"),
+		esc(r.Security.AntivirusName), boolToStatus(r.Security.AntivirusEnabled, "Aktiv", "Inaktiv"),
 		boolToStatus(r.Security.RealtimeProtection, "Aktivt", "Inaktivt"),
-		r.Security.BitLockerStatus,
+		esc(r.Security.BitLockerStatus),
 		boolToStatus(r.Security.FirewallEnabled, "Aktiverad", "Inaktiverad"),
-		defaultIfEmpty(r.Security.LastUpdateInstallTime, "Okänt / Nyligen"),
-		defaultIfEmpty(r.Security.LastUpdateSearchTime, "Nyligen"),
-		fmt.Sprintf("%d st (%s)", r.Security.PendingUpdatesCount, defaultIfEmpty(r.Security.WindowsUpdateOverallStatus, "Aktuell")),
+		esc(defaultIfEmpty(r.Security.LastUpdateInstallTime, "Okänt / Nyligen")),
+		esc(defaultIfEmpty(r.Security.LastUpdateSearchTime, "Nyligen")),
+		esc(fmt.Sprintf("%d st (%s)", r.Security.PendingUpdatesCount, defaultIfEmpty(r.Security.WindowsUpdateOverallStatus, "Aktuell"))),
 		boolToStatus(r.Integrity.PendingReboot, "Ja (Krävs)", "Nej")))
 
 	// Event Logs Card
@@ -419,7 +425,7 @@ func buildHTMLContent(r *models.HealthReport) string {
     <div class="stat-row"><span class="stat-label">Temporära filer:</span><span class="stat-val">%s</span></div>
   </div>`,
 		getBadgeClass(r.EventLogs.Severity), r.EventLogs.Score,
-		len(r.EventLogs.BSODCrashDumps), r.EventLogs.CriticalEventCount, len(r.EventLogs.RecentAppCrashes), r.Integrity.TempFilesSizeDisplay))
+		len(r.EventLogs.BSODCrashDumps), r.EventLogs.CriticalEventCount, len(r.EventLogs.RecentAppCrashes), esc(r.Integrity.TempFilesSizeDisplay)))
 
 	// Boot & Logon Analysis Card
 	sb.WriteString(fmt.Sprintf(`
@@ -442,13 +448,13 @@ func buildHTMLContent(r *models.HealthReport) string {
 		r.BootLogon.PostBootDelaySeconds,
 		boolToStatus(r.BootLogon.FastStartupEnabled, "Aktiverat", "Inaktiverat"),
 		boolToStatus(r.BootLogon.IsDomainJoined, "Domänansluten", "Lokal arbetsgrupp"),
-		defaultIfEmpty(r.BootLogon.DomainName, "WORKGROUP"),
-		defaultIfEmpty(r.BootLogon.BootTrace.StatusMessage, "Redo")))
+		esc(defaultIfEmpty(r.BootLogon.DomainName, "WORKGROUP")),
+		esc(defaultIfEmpty(r.BootLogon.BootTrace.StatusMessage, "Redo"))))
 
 	if len(r.BootLogon.UnreachableResources) > 0 {
 		sb.WriteString(`<div style="margin-top:10px; color:#ef4444; font-size:12px; font-weight:600;">⚠️ Onåbara nätverksresurser (Timeouter):</div>`)
 		for _, un := range r.BootLogon.UnreachableResources {
-			sb.WriteString(fmt.Sprintf(`<div class="stat-row"><span class="stat-label" style="color:#f87171;">🔴 %s:</span><span class="stat-val" style="font-size:11px;">%s (Nås ej)</span></div>`, un.Name, un.TargetUNC))
+			sb.WriteString(fmt.Sprintf(`<div class="stat-row"><span class="stat-label" style="color:#f87171;">🔴 %s:</span><span class="stat-val" style="font-size:11px;">%s (Nås ej)</span></div>`, esc(un.Name), esc(un.TargetUNC)))
 		}
 	}
 
@@ -472,7 +478,7 @@ func buildHTMLContent(r *models.HealthReport) string {
         <td><strong>%s</strong></td>
         <td style="color:#f59e0b; font-weight:600;">+%d ms</td>
         <td>%s</td>
-      </tr>`, deg.Type, deg.Name, deg.DurationMs, deg.Description))
+      </tr>`, esc(deg.Type), esc(deg.Name), deg.DurationMs, esc(deg.Description)))
 		}
 		sb.WriteString(`</tbody></table></div></div>`)
 	}
@@ -487,15 +493,15 @@ func buildHTMLContent(r *models.HealthReport) string {
     <div class="stat-row"><span class="stat-label">Spårningsfil:</span><span class="stat-val" style="font-size:11px;"><code>%s</code></span></div>
     <div class="stat-row"><span class="stat-label">Filstorlek:</span><span class="stat-val">%s</span></div>
     <div class="stat-row"><span class="stat-label">Inspelad:</span><span class="stat-val">%s</span></div>`,
-			r.BootLogon.BootTrace.TraceFilePath,
-			r.BootLogon.BootTrace.TraceFileSize,
-			r.BootLogon.BootTrace.TraceRecordedAt))
+			esc(r.BootLogon.BootTrace.TraceFilePath),
+			esc(r.BootLogon.BootTrace.TraceFileSize),
+			esc(r.BootLogon.BootTrace.TraceRecordedAt)))
 
 		if len(r.BootLogon.BootTrace.SlowestDrivers) > 0 {
 			sb.WriteString(`<div style="margin-top:12px; font-size:12px; font-weight:600; color:var(--text-secondary);">Mätta Drivrutiner:</div>
     <div class="table-container"><table><thead><tr><th>Drivrutin</th><th>Kategori</th><th>Laddningstid</th><th>Sökväg</th></tr></thead><tbody>`)
 			for _, d := range r.BootLogon.BootTrace.SlowestDrivers {
-				sb.WriteString(fmt.Sprintf(`<tr><td><strong>%s</strong></td><td><span class="badge badge-info">%s</span></td><td style="color:#38bdf8; font-weight:600;">%d ms</td><td style="font-size:10px;"><code>%s</code></td></tr>`, d.Name, d.Category, d.DurationMs, defaultIfEmpty(d.Path, "-")))
+				sb.WriteString(fmt.Sprintf(`<tr><td><strong>%s</strong></td><td><span class="badge badge-info">%s</span></td><td style="color:#38bdf8; font-weight:600;">%d ms</td><td style="font-size:10px;"><code>%s</code></td></tr>`, esc(d.Name), esc(d.Category), d.DurationMs, esc(defaultIfEmpty(d.Path, "-"))))
 			}
 			sb.WriteString(`</tbody></table></div>`)
 		}
@@ -504,7 +510,7 @@ func buildHTMLContent(r *models.HealthReport) string {
 			sb.WriteString(`<div style="margin-top:12px; font-size:12px; font-weight:600; color:var(--text-secondary);">Mätta Tjänster:</div>
     <div class="table-container"><table><thead><tr><th>Tjänst</th><th>Kategori</th><th>Starttid</th><th>Sökväg</th></tr></thead><tbody>`)
 			for _, s := range r.BootLogon.BootTrace.SlowestServices {
-				sb.WriteString(fmt.Sprintf(`<tr><td><strong>%s</strong></td><td><span class="badge badge-info">%s</span></td><td style="color:#38bdf8; font-weight:600;">%d ms</td><td style="font-size:10px;"><code>%s</code></td></tr>`, s.Name, s.Category, s.DurationMs, defaultIfEmpty(s.Path, "-")))
+				sb.WriteString(fmt.Sprintf(`<tr><td><strong>%s</strong></td><td><span class="badge badge-info">%s</span></td><td style="color:#38bdf8; font-weight:600;">%d ms</td><td style="font-size:10px;"><code>%s</code></td></tr>`, esc(s.Name), esc(s.Category), s.DurationMs, esc(defaultIfEmpty(s.Path, "-"))))
 			}
 			sb.WriteString(`</tbody></table></div>`)
 		}
@@ -534,7 +540,7 @@ func buildHTMLContent(r *models.HealthReport) string {
         <td>%s</td>
         <td style="font-size:11px; max-width:350px; word-break:break-all;"><code>%s</code></td>
         <td>%s</td>
-      </tr>`, item.Category, item.Name, defaultIfEmpty(item.Publisher, "-"), item.Path, signBadge))
+      </tr>`, esc(item.Category), esc(item.Name), esc(defaultIfEmpty(item.Publisher, "-")), esc(item.Path), signBadge))
 		}
 		sb.WriteString(`</tbody></table></div></div>`)
 	}
@@ -545,7 +551,7 @@ func buildHTMLContent(r *models.HealthReport) string {
     <div class="card-title"><span>📝 Senaste Check Point VPN Fel-loggar</span></div>
     <div class="log-box">`)
 		for _, l := range r.CheckPointVPN.RecentLogErrors {
-			sb.WriteString(l + "\n")
+			sb.WriteString(esc(l) + "\n")
 		}
 		sb.WriteString(`</div></div>`)
 	}

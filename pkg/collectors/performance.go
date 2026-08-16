@@ -2,9 +2,8 @@ package collectors
 
 import (
 	"encoding/json"
-	"os/exec"
 	"strings"
-	"syscall"
+	"time"
 	"winhealth/pkg/models"
 )
 
@@ -75,9 +74,7 @@ foreach ($rp in $regPaths) {
     Startup = $startup
 } | ConvertTo-Json -Depth 2 -Compress`
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, _ := cmd.Output()
+	out, _ := RunPowerShellWithTimeout(psScript, 8*time.Second)
 
 	type rawPerf struct {
 		TotalProcs   int         `json:"TotalProcs"`

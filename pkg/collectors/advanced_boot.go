@@ -507,11 +507,14 @@ func StopAndAnalyzeWPRBootTrace() models.FixActionResult {
 	slowDrivers, slowServices := AnalyzeBootDriversAndServices()
 
 	fi, statErr := os.Stat(outEtlPath)
-	fileSize := "Klar"
-	if statErr == nil && fi.Size() > 0 {
-		fileSize = formatBytes(fi.Size())
+	if statErr != nil || fi.Size() == 0 {
+		r.Success = false
+		r.Message = "⚠️ Ingen spårningsfil kunde sparas. Kontrollera att WPR spelade in och att WinHealth körs med administratörsrättigheter."
+		r.Output = append(r.Output, "ETL-filen skapades inte eller är tom.")
+		return r
 	}
 
+	fileSize := formatBytes(fi.Size())
 	summary := BootTraceSummaryMeta{
 		TraceFilePath:   outEtlPath,
 		TraceFileSize:   fileSize,

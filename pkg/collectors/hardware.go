@@ -3,9 +3,8 @@ package collectors
 import (
 	"encoding/json"
 	"math"
-	"os/exec"
 	"strings"
-	"syscall"
+	"time"
 	"winhealth/pkg/models"
 )
 
@@ -17,26 +16,34 @@ func CollectHardwareDiagnostics() models.HardwareReport {
 		Disks:    make([]models.DiskInfo, 0),
 	}
 
-	// PowerShell script to gather hardware details in a single fast JSON bundle
-	psScript := `$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 Name, NumberOfCores, LoadPercentage
-$os = Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize, FreePhysicalMemory
+	// PowerShell script to gather hardware details with accurate logical-to-physical disk mapping
+	psScript := `$cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1 Name, NumberOfCores, LoadPercentage
+$os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue | Select-Object TotalVisibleMemorySize, FreePhysicalMemory
 $bb = Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue | Select-Object -First 1 Manufacturer, Product
 $bios = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue | Select-Object -First 1 SMBIOSBIOSVersion
 
-$disks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | ForEach-Object {
+$disks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue | ForEach-Object {
     $driveLetter = $_.DeviceID
-    $vol = Get-Volume -DriveLetter $driveLetter.Replace(':','') -ErrorAction SilentlyContinue
-    $phys = Get-PhysicalDisk -ErrorAction SilentlyContinue | Select-Object -First 1 FriendlyName, MediaType, HealthStatus, OperationalStatus
+    $cleanLetter = $driveLetter.TrimEnd(':')
+    $part = Get-Partition -DriveLetter $cleanLetter -ErrorAction SilentlyContinue
+    $disk = if ($part) { Get-Disk -Number $part.DiskNumber -ErrorAction SilentlyContinue } else { $null }
+    $phys = if ($disk) { Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { $_.DeviceId -eq $disk.Number.ToString() -or $_.FriendlyName -eq $disk.FriendlyName } | Select-Object -First 1 } else { $null }
+    
+    $model = if ($phys -and $phys.FriendlyName) { $phys.FriendlyName } elseif ($disk -and $disk.FriendlyName) { $disk.FriendlyName } else { "Lokal disk" }
+    $media = if ($phys -and $phys.MediaType) { $phys.MediaType } elseif ($disk -and $disk.MediaType) { $disk.MediaType } else { "SSD/HDD" }
+    $health = if ($phys -and $phys.HealthStatus) { $phys.HealthStatus } elseif ($disk -and $disk.HealthStatus) { $disk.HealthStatus } else { "Healthy" }
+    $op = if ($phys -and $phys.OperationalStatus) { ($phys.OperationalStatus -join ', ') } elseif ($disk -and $disk.OperationalStatus) { ($disk.OperationalStatus -join ', ') } else { "OK" }
+
     [PSCustomObject]@{
         DeviceID = $_.DeviceID
         DriveLetter = $driveLetter
         FileSystem = $_.FileSystem
         TotalBytes = $_.Size
         FreeBytes = $_.FreeSpace
-        Model = if ($phys) { $phys.FriendlyName } else { "Local Disk" }
-        MediaType = if ($phys) { $phys.MediaType } else { "SSD/HDD" }
-        HealthStatus = if ($phys) { $phys.HealthStatus } else { "Healthy" }
-        OperationalStatus = if ($phys) { ($phys.OperationalStatus -join ', ') } else { "OK" }
+        Model = $model
+        MediaType = $media
+        HealthStatus = $health
+        OperationalStatus = $op
     }
 }
 
@@ -52,23 +59,23 @@ if ($batt) {
 }
 
 [PSCustomObject]@{
-    CPUName = $cpu.Name
-    CPUCores = $cpu.NumberOfCores
-    CPULoad = $cpu.LoadPercentage
-    TotalRAMKB = $os.TotalVisibleMemorySize
-    FreeRAMKB = $os.FreePhysicalMemory
-    Motherboard = "$($bb.Manufacturer) $($bb.Product)"
-    BIOSVersion = $bios.SMBIOSBIOSVersion
+    CPUName = if ($cpu) { $cpu.Name } else { "" }
+    CPUCores = if ($cpu) { $cpu.NumberOfCores } else { 0 }
+    CPULoad = if ($cpu) { $cpu.LoadPercentage } else { 0 }
+    TotalRAMKB = if ($os) { $os.TotalVisibleMemorySize } else { 0 }
+    FreeRAMKB = if ($os) { $os.FreePhysicalMemory } else { 0 }
+    Motherboard = if ($bb) { "$($bb.Manufacturer) $($bb.Product)".Trim() } else { "" }
+    BIOSVersion = if ($bios) { $bios.SMBIOSBIOSVersion } else { "" }
     Disks = $disks
     Battery = $batteryObj
 } | ConvertTo-Json -Depth 3 -Compress`
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd.Output()
+	out, err := RunPowerShellWithTimeout(psScript, 10*time.Second)
 	if err != nil || len(out) == 0 {
-		report.CPUModel = "Windows Computer"
-		report.CPUCores = 4
+		report.Score = 50
+		report.Severity = models.SeverityWarning
+		report.CPUModel = "Kunde inte fastställas (timeout/fel)"
+		report.CPUCores = 0
 		return report
 	}
 
@@ -91,6 +98,10 @@ if ($batt) {
 
 	var data rawHW
 	if err := json.Unmarshal(out, &data); err != nil {
+		report.Score = 50
+		report.Severity = models.SeverityWarning
+		report.CPUModel = "Kunde inte tolkas"
+		report.CPUCores = 0
 		return report
 	}
 

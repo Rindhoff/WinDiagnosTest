@@ -3,11 +3,10 @@ package collectors
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"winhealth/pkg/models"
 )
@@ -82,17 +81,17 @@ func RunFullDiagnostics() models.HealthReport {
 }
 
 func gatherOSBasics(report *models.HealthReport) {
-	psScript := `$os = Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber, LastBootUpTime
-[PSCustomObject]@{
-    Caption = $os.Caption
-    Version = $os.Version
-    BuildNumber = $os.BuildNumber
-    UptimeHours = [math]::Round(((Get-Date) - $os.LastBootUpTime).TotalHours, 1)
-} | ConvertTo-Json -Compress`
+	psScript := `$os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue | Select-Object Caption, Version, BuildNumber, LastBootUpTime
+if ($os) {
+    [PSCustomObject]@{
+        Caption = $os.Caption
+        Version = $os.Version
+        BuildNumber = $os.BuildNumber
+        UptimeHours = [math]::Round(((Get-Date) - $os.LastBootUpTime).TotalHours, 1)
+    } | ConvertTo-Json -Compress
+}`
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd.Output()
+	out, err := RunPowerShellWithTimeout(psScript, 5*time.Second)
 	if err == nil && len(out) > 0 {
 		type osInfo struct {
 			Caption     string  `json:"Caption"`
@@ -122,21 +121,23 @@ func gatherOSBasics(report *models.HealthReport) {
 }
 
 func calculateOverallScoreAndIssues(r *models.HealthReport) {
-	// Weights
-	hwWeight := 0.20
-	logWeight := 0.20
+	// Weights including BootLogon
+	hwWeight := 0.15
+	logWeight := 0.15
 	netWeight := 0.15
 	secWeight := 0.15
+	bootWeight := 0.15
 	cpWeight := 0.15
-	integWeight := 0.10
+	integWeight := 0.05
 	perfWeight := 0.05
 
-	// If Check Point is not installed, redistribute its weight
+	// If Check Point is not installed/detected, redistribute its weight
 	if !r.CheckPointVPN.Detected {
-		hwWeight = 0.25
-		logWeight = 0.25
-		netWeight = 0.20
+		hwWeight = 0.20
+		logWeight = 0.20
+		netWeight = 0.15
 		secWeight = 0.15
+		bootWeight = 0.15
 		integWeight = 0.10
 		perfWeight = 0.05
 		cpWeight = 0.0
@@ -146,28 +147,12 @@ func calculateOverallScoreAndIssues(r *models.HealthReport) {
 		float64(r.EventLogs.Score)*logWeight +
 		float64(r.Network.Score)*netWeight +
 		float64(r.Security.Score)*secWeight +
+		float64(r.BootLogon.Score)*bootWeight +
 		float64(r.Integrity.Score)*integWeight +
 		float64(r.Performance.Score)*perfWeight +
 		float64(r.CheckPointVPN.Score)*cpWeight
 
-	r.TotalScore = int(weightedScore)
-	if r.TotalScore > 100 {
-		r.TotalScore = 100
-	}
-	if r.TotalScore < 0 {
-		r.TotalScore = 0
-	}
-
-	// Score Rating
-	if r.TotalScore >= 90 {
-		r.ScoreRating = "Utmärkt skick"
-	} else if r.TotalScore >= 75 {
-		r.ScoreRating = "Gott skick med anmärkningar"
-	} else if r.TotalScore >= 50 {
-		r.ScoreRating = "Varningar kräver åtgärd"
-	} else {
-		r.ScoreRating = "Kritiska problem identifierade"
-	}
+	r.TotalScore = int(math.Round(weightedScore))
 
 	// Build Top Issues List
 	// 1. Check Point Issues
@@ -323,8 +308,7 @@ func calculateOverallScoreAndIssues(r *models.HealthReport) {
 		})
 	}
 
-	// Count badges
-	okCount := 0
+	// Count issues by severity
 	warnCount := 0
 	critCount := 0
 	for _, issue := range r.TopIssues {
@@ -332,11 +316,121 @@ func calculateOverallScoreAndIssues(r *models.HealthReport) {
 			critCount++
 		} else if issue.Severity == models.SeverityWarning {
 			warnCount++
-		} else {
-			okCount++
 		}
 	}
-	r.SummaryBadges["OK"] = okCount
+
+	// Score Capping for Critical / Severe findings
+	if critCount >= 3 && r.TotalScore > 49 {
+		r.TotalScore = 49
+	} else if critCount > 0 && r.TotalScore > 69 {
+		r.TotalScore = 69
+	} else if warnCount >= 4 && r.TotalScore > 79 {
+		r.TotalScore = 79
+	}
+
+	if r.TotalScore > 100 {
+		r.TotalScore = 100
+	}
+	if r.TotalScore < 0 {
+		r.TotalScore = 0
+	}
+
+	// Score Rating
+	if r.TotalScore >= 90 {
+		r.ScoreRating = "Utmärkt skick"
+	} else if r.TotalScore >= 75 {
+		r.ScoreRating = "Gott skick med anmärkningar"
+	} else if r.TotalScore >= 50 {
+		r.ScoreRating = "Varningar kräver åtgärd"
+	} else {
+		r.ScoreRating = "Kritiska problem identifierade"
+	}
+
+	r.SummaryBadges["OK"] = countPassingChecks(r)
 	r.SummaryBadges["WARNING"] = warnCount
 	r.SummaryBadges["CRITICAL"] = critCount
+}
+
+func countPassingChecks(r *models.HealthReport) int {
+	passed := 0
+
+	// 1. Hardware checks
+	if r.Hardware.Score >= 80 {
+		passed++
+	}
+	allDisksHealthy := true
+	for _, d := range r.Hardware.Disks {
+		if !d.SmartHealthy || d.UsagePct > 90 {
+			allDisksHealthy = false
+			break
+		}
+	}
+	if len(r.Hardware.Disks) > 0 && allDisksHealthy {
+		passed++
+	}
+
+	// 2. Security checks
+	if r.Security.AntivirusEnabled && r.Security.RealtimeProtection {
+		passed++
+	}
+	if r.Security.FirewallEnabled {
+		passed++
+	}
+	if r.Security.WindowsUpdateServiceOK {
+		passed++
+	}
+	if r.Security.BitLockerProtected {
+		passed++
+	}
+
+	// 3. Network checks
+	if r.Network.InternetOK {
+		passed++
+	}
+	if len(r.Network.ActiveAdapters) > 0 {
+		passed++
+	}
+	if r.Network.GatewayPingMs >= 0 {
+		passed++
+	}
+
+	// 4. Event log checks
+	if len(r.EventLogs.BSODCrashDumps) == 0 {
+		passed++
+	}
+	if r.EventLogs.CriticalEventCount == 0 {
+		passed++
+	}
+
+	// 5. Integrity checks
+	if len(r.Integrity.DeviceManagerErrors) == 0 {
+		passed++
+	}
+	if !r.Integrity.PendingReboot {
+		passed++
+	}
+
+	// 6. Boot & Logon checks
+	if len(r.BootLogon.UnreachableResources) == 0 {
+		passed++
+	}
+	if r.BootLogon.TotalBootDurationSeconds > 0 && r.BootLogon.TotalBootDurationSeconds <= 35.0 {
+		passed++
+	}
+
+	// 7. CheckPoint VPN checks (if present)
+	if r.CheckPointVPN.Detected {
+		allServicesHealthy := true
+		for _, s := range r.CheckPointVPN.Services {
+			if !s.IsHealthy {
+				allServicesHealthy = false
+				break
+			}
+		}
+		if allServicesHealthy {
+			passed++
+		}
+	}
+
+	return passed
 }

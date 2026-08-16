@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"regexp"
-	"syscall"
 	"time"
 	"winhealth/pkg/models"
 )
@@ -67,27 +65,26 @@ if ($bootDurationSec -eq 0.0) {
         $logonEv = Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Microsoft-Windows-Winlogon'; Id=7001} -MaxEvents 1 -ErrorAction SilentlyContinue
         $svcEv = Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='EventLog'; Id=6005} -MaxEvents 1 -ErrorAction SilentlyContinue
 
-        $kTime = if ($kernelEv) { $kernelEv.TimeCreated } elseif ($os -and $os.LastBootUpTime) { [datetime]$os.LastBootUpTime } else { (Get-Date).AddMinutes(-10) }
-        $lTime = if ($logonEv) { $logonEv.TimeCreated } else { $kTime.AddSeconds(12) }
-        $sTime = if ($svcEv) { $svcEv.TimeCreated } else { $lTime.AddSeconds(6) }
+        if ($kernelEv -and ($logonEv -or $svcEv)) {
+            $kTime = $kernelEv.TimeCreated
+            $lTime = if ($logonEv) { $logonEv.TimeCreated } else { $svcEv.TimeCreated }
+            $sTime = if ($svcEv) { $svcEv.TimeCreated } else { $lTime }
 
-        $calculatedMainPath = [math]::Round(($lTime - $kTime).TotalSeconds, 1)
-        if ($calculatedMainPath -lt 1.0 -or $calculatedMainPath -gt 180.0) { $calculatedMainPath = 10.4 }
-
-        $calculatedLogon = [math]::Round(($sTime - $lTime).TotalSeconds, 1)
-        if ($calculatedLogon -lt 0.5 -or $calculatedLogon -gt 60.0) { $calculatedLogon = 2.4 }
-
-        $calculatedPostBoot = [math]::Round($calculatedMainPath * 0.45, 1)
-
-        $mainPathSec = $calculatedMainPath
-        $userLogonSec = $calculatedLogon
-        $postBootSec = $calculatedPostBoot
-        $bootDurationSec = [math]::Round($mainPathSec + $userLogonSec + $postBootSec, 1)
+            $calculatedMainPath = [math]::Round(($lTime - $kTime).TotalSeconds, 1)
+            $calculatedLogon = if ($sTime -ge $lTime) { [math]::Round(($sTime - $lTime).TotalSeconds, 1) } else { 0.0 }
+            if ($calculatedMainPath > 0.0 -and $calculatedMainPath -lt 300.0) {
+                $mainPathSec = $calculatedMainPath
+                $userLogonSec = $calculatedLogon
+                $postBootSec = 0.0
+                $bootDurationSec = [math]::Round($mainPathSec + $userLogonSec, 1)
+            }
+        }
     } catch {
-        $bootDurationSec = 14.5
-        $mainPathSec = 7.8
-        $userLogonSec = 2.1
-        $postBootSec = 4.6
+        # No synthetic fake numbers - leave 0.0 to indicate no recorded metrics
+        $bootDurationSec = 0.0
+        $mainPathSec = 0.0
+        $userLogonSec = 0.0
+        $postBootSec = 0.0
     }
 }
 
@@ -233,9 +230,13 @@ Add-Startup "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" "HKLM (Alla an
     StartupApps = $startupApps
 } | ConvertTo-Json -Compress`
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, _ := cmd.Output()
+	out, err := RunPowerShellWithTimeout(psScript, 12*time.Second)
+	if err != nil || len(out) == 0 {
+		report.Score = 70
+		report.Severity = models.SeverityOK
+		report.SummaryText = "Uppstartsdata kunde inte avläsas (timeout/fel i eventlogg)."
+		return report
+	}
 
 	type rawBoot struct {
 		LastBoot        string `json:"LastBoot"`
@@ -381,8 +382,10 @@ Add-Startup "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" "HKLM (Alla an
 		report.SummaryText = fmt.Sprintf("⚠️ %d onåbara nätverksresurser orsakar potentiella timeouter vid inloggning.", len(report.UnreachableResources))
 	} else if report.TotalBootDurationSeconds > 35.0 {
 		report.SummaryText = fmt.Sprintf("Uppstartstiden är relativt långsam (%.1f sekunder). Flera autostartprogram belastar systemet.", report.TotalBootDurationSeconds)
-	} else {
+	} else if report.TotalBootDurationSeconds > 0.0 {
 		report.SummaryText = fmt.Sprintf("Snabb och stabil uppstart (%.1f sekunder). Inga onåbara resurser identifierades.", report.TotalBootDurationSeconds)
+	} else {
+		report.SummaryText = "Ingen detaljerad uppstartsmätning fanns registrerad i eventloggen."
 	}
 
 	return report

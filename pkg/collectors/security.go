@@ -3,27 +3,26 @@ package collectors
 import (
 	"encoding/json"
 	"fmt"
-	"os/exec"
-	"syscall"
+	"time"
 	"winhealth/pkg/models"
 )
 
-// CollectSecurityDiagnostics inspects Defender, BitLocker, Firewall and Windows Update
+// CollectSecurityDiagnostics inspects Defender, 3rd Party AV, BitLocker, Firewall and Windows Update
 func CollectSecurityDiagnostics() models.SecurityReport {
 	report := models.SecurityReport{
 		Severity:                   models.SeverityOK,
 		Score:                      100,
-		AntivirusName:              "Windows Defender",
-		AntivirusEnabled:           true,
-		RealtimeProtection:         true,
-		DefinitionsUpToDate:        true,
+		AntivirusName:              "Kunde inte fastställas",
+		AntivirusEnabled:           false,
+		RealtimeProtection:         false,
+		DefinitionsUpToDate:        false,
 		BitLockerProtected:         false,
 		BitLockerStatus:            "Ej skyddad / Inaktiverad",
-		FirewallEnabled:            true,
+		FirewallEnabled:            false,
 		UACLevel:                   "Normal",
-		WindowsUpdateServiceOK:     true,
-		WindowsUpdateStatus:        "Aktiv / Standby (Normalt)",
-		WindowsUpdateOverallStatus: "Datorn är uppdaterad",
+		WindowsUpdateServiceOK:     false,
+		WindowsUpdateStatus:        "Kunde inte avläsas",
+		WindowsUpdateOverallStatus: "Uppdateringsstatus kunde inte avläsas",
 		PendingUpdatesList:         make([]string, 0),
 		PendingUpdatesDetails:      make([]models.WindowsUpdateItem, 0),
 		HiddenUpdatesList:          make([]models.WindowsUpdateItem, 0),
@@ -31,9 +30,32 @@ func CollectSecurityDiagnostics() models.SecurityReport {
 	}
 
 	psScript := `$mp = Get-MpComputerStatus -ErrorAction SilentlyContinue | Select-Object AntivirusEnabled, RealTimeProtectionEnabled, AntivirusSignatureAge
+$avWmi = Get-CimInstance -Namespace root\SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction SilentlyContinue | Select-Object displayName, productState
 $fw = Get-NetFirewallProfile -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq $true }
 $wuSvc = Get-Service -Name 'wuauserv' -ErrorAction SilentlyContinue | Select-Object Status, StartType
-$usoSvc = Get-Service -Name 'usosvc' -ErrorAction SilentlyContinue | Select-Object Status, StartType
+
+# 0. Detect Antivirus Name and State (Defender or 3rd party like SentinelOne, CrowdStrike, Bitdefender etc)
+$avName = "Ingen aktiv antivirusprodukt"
+$avEnabled = $false
+$realtimeEnabled = $false
+$sigAge = 0
+
+if ($mp -and ($mp.AntivirusEnabled -eq $true -or $mp.RealTimeProtectionEnabled -eq $true)) {
+    $avName = "Windows Defender"
+    $avEnabled = [bool]$mp.AntivirusEnabled
+    $realtimeEnabled = [bool]$mp.RealTimeProtectionEnabled
+    $sigAge = if ($mp.AntivirusSignatureAge) { [int]$mp.AntivirusSignatureAge } else { 0 }
+} elseif ($avWmi) {
+    $activeProduct = $avWmi | Select-Object -First 1
+    if ($activeProduct) {
+        $avName = $activeProduct.displayName
+        $stateHex = ("{0:X6}" -f $activeProduct.productState)
+        # In WMI SecurityCenter2: 2nd byte 0x10 or 0x11 is enabled
+        $avEnabled = ($activeProduct.productState -band 0x1000) -ne 0 -or ($activeProduct.productState -band 0x10) -ne 0
+        $realtimeEnabled = $avEnabled
+        $sigAge = if (($activeProduct.productState -band 0x0010) -ne 0) { 0 } else { 1 }
+    }
+}
 
 # 1. BitLocker Detection (Multi-tier: Direct WMI + Driver / TPM events + Service status)
 $blProtected = $false
@@ -45,7 +67,6 @@ if ($bl -and ($bl.ProtectionStatus -eq 'On' -or $bl.ProtectionStatus -eq 1)) {
     $protectors = if ($bl.KeyProtector) { ($bl.KeyProtector.KeyProtectorType -join ', ') } else { "TPM/PIN" }
     $blStatus = "Skyddad (Aktiv kryptering på C: - $protectors)"
 } else {
-    # Fallback when running without full elevation: Check BitLocker Driver & TPM boot events
     $driverEvents = Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Microsoft-Windows-BitLocker-Driver'} -MaxEvents 5 -ErrorAction SilentlyContinue
     $bdeSvc = Get-Service -Name 'BDESVC' -ErrorAction SilentlyContinue
     
@@ -62,15 +83,17 @@ if ($bl -and ($bl.ProtectionStatus -eq 'On' -or $bl.ProtectionStatus -eq 1)) {
 }
 
 # 2. Windows Update Service & Health
-$wuOk = $true
-$wuStatusDisplay = "Aktiv / Standby (Normalt)"
+$wuOk = $false
+$wuStatusDisplay = "Okänd status"
 if ($wuSvc) {
     if ($wuSvc.StartType -eq 'Disabled' -or $wuSvc.StartType -eq 4) {
         $wuOk = $false
         $wuStatusDisplay = "Inaktiverad (Fel)"
     } elseif ($wuSvc.Status -eq 'Running' -or $wuSvc.Status -eq 4) {
+        $wuOk = $true
         $wuStatusDisplay = "Körs aktivt (Uppdaterar/Söker)"
     } else {
+        $wuOk = $true
         $wuStatusDisplay = "I beredskap / Standby (Startar vid behov)"
     }
 }
@@ -148,9 +171,10 @@ if ($rebootPend) {
 }
 
 [PSCustomObject]@{
-    MpAntivirus = if ($mp) { $mp.AntivirusEnabled } else { $true }
-    MpRealtime = if ($mp) { $mp.RealTimeProtectionEnabled } else { $true }
-    MpSigAge = if ($mp) { $mp.AntivirusSignatureAge } else { 0 }
+    AvName = $avName
+    MpAntivirus = $avEnabled
+    MpRealtime = $realtimeEnabled
+    MpSigAge = $sigAge
     BitLockerProtected = $blProtected
     BitLockerStatus = $blStatus
     FirewallActiveCount = if ($fw) { ($fw | Measure-Object).Count } else { 0 }
@@ -168,11 +192,10 @@ if ($rebootPend) {
     RebootPending = $rebootPend
 } | ConvertTo-Json -Compress`
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, _ := cmd.Output()
+	out, err := RunPowerShellWithTimeout(psScript, 12*time.Second)
 
 	type rawSec struct {
+		AvName              string                     `json:"AvName"`
 		MpAntivirus         interface{}                `json:"MpAntivirus"`
 		MpRealtime          interface{}                `json:"MpRealtime"`
 		MpSigAge            int                        `json:"MpSigAge"`
@@ -193,60 +216,72 @@ if ($rebootPend) {
 		RebootPending       bool                       `json:"RebootPending"`
 	}
 
-	if len(out) > 0 {
-		var secData rawSec
-		if err := json.Unmarshal(out, &secData); err == nil {
-			if secData.MpAntivirus != nil {
-				report.AntivirusEnabled = fmt.Sprintf("%v", secData.MpAntivirus) == "true" || fmt.Sprintf("%v", secData.MpAntivirus) == "1"
-			}
-			if secData.MpRealtime != nil {
-				report.RealtimeProtection = fmt.Sprintf("%v", secData.MpRealtime) == "true" || fmt.Sprintf("%v", secData.MpRealtime) == "1"
-			}
-			if secData.MpSigAge > 14 {
-				report.DefinitionsUpToDate = false
-			}
+	if err != nil || len(out) == 0 {
+		report.Score = 40
+		report.Severity = models.SeverityWarning
+		report.AntivirusName = "Kunde inte fastställas (timeout/behörighetsfel)"
+		report.WindowsUpdateOverallStatus = "Status kunde inte avläsas ur systemet"
+		return report
+	}
 
-			report.BitLockerProtected = secData.BitLockerProtected
-			if secData.BitLockerStatus != "" {
-				report.BitLockerStatus = secData.BitLockerStatus
-			}
-
-			report.FirewallEnabled = secData.FirewallActiveCount > 0
-
-			report.WindowsUpdateServiceOK = secData.WuOk
-			if secData.WuStatusDisplay != "" {
-				report.WindowsUpdateStatus = secData.WuStatusDisplay
-			}
-			if secData.OverallStatus != "" {
-				report.WindowsUpdateOverallStatus = secData.OverallStatus
-			}
-			report.LastUpdateSearchTime = secData.LastSearchDate
-			report.LastUpdateInstallTime = secData.LastInstallDate
-
-			report.PendingUpdatesCount = secData.PendingCount
-			if len(secData.PendingTitles) > 0 {
-				report.PendingUpdatesList = secData.PendingTitles
-			}
-			if len(secData.PendingDetails) > 0 {
-				report.PendingUpdatesDetails = secData.PendingDetails
-			}
-			report.HiddenUpdatesCount = secData.HiddenCount
-			if len(secData.HiddenDetails) > 0 {
-				report.HiddenUpdatesList = secData.HiddenDetails
-			}
-			if len(secData.RecentInstalled) > 0 {
-				report.RecentUpdatesInstalled = secData.RecentInstalled
-			}
-
-			if secData.RebootPending {
-				report.PendingUpdatesList = append(report.PendingUpdatesList, "Väntande omstart krävs för att slutföra installationer.")
-			}
+	var secData rawSec
+	if err := json.Unmarshal(out, &secData); err == nil {
+		if secData.AvName != "" {
+			report.AntivirusName = secData.AvName
 		}
+		if secData.MpAntivirus != nil {
+			report.AntivirusEnabled = fmt.Sprintf("%v", secData.MpAntivirus) == "true" || fmt.Sprintf("%v", secData.MpAntivirus) == "1"
+		}
+		if secData.MpRealtime != nil {
+			report.RealtimeProtection = fmt.Sprintf("%v", secData.MpRealtime) == "true" || fmt.Sprintf("%v", secData.MpRealtime) == "1"
+		}
+		report.DefinitionsUpToDate = secData.MpSigAge <= 14
+
+		report.BitLockerProtected = secData.BitLockerProtected
+		if secData.BitLockerStatus != "" {
+			report.BitLockerStatus = secData.BitLockerStatus
+		}
+
+		report.FirewallEnabled = secData.FirewallActiveCount > 0
+
+		report.WindowsUpdateServiceOK = secData.WuOk
+		if secData.WuStatusDisplay != "" {
+			report.WindowsUpdateStatus = secData.WuStatusDisplay
+		}
+		if secData.OverallStatus != "" {
+			report.WindowsUpdateOverallStatus = secData.OverallStatus
+		}
+		report.LastUpdateSearchTime = secData.LastSearchDate
+		report.LastUpdateInstallTime = secData.LastInstallDate
+
+		report.PendingUpdatesCount = secData.PendingCount
+		if len(secData.PendingTitles) > 0 {
+			report.PendingUpdatesList = secData.PendingTitles
+		}
+		if len(secData.PendingDetails) > 0 {
+			report.PendingUpdatesDetails = secData.PendingDetails
+		}
+		report.HiddenUpdatesCount = secData.HiddenCount
+		if len(secData.HiddenDetails) > 0 {
+			report.HiddenUpdatesList = secData.HiddenDetails
+		}
+		if len(secData.RecentInstalled) > 0 {
+			report.RecentUpdatesInstalled = secData.RecentInstalled
+		}
+
+		if secData.RebootPending {
+			report.PendingUpdatesList = append(report.PendingUpdatesList, "Väntande omstart krävs för att slutföra installationer.")
+		}
+	} else {
+		report.Score = 40
+		report.Severity = models.SeverityWarning
+		report.AntivirusName = "Kunde inte tolkas"
+		return report
 	}
 
 	// Calculate Score
 	score := 100
-	if !report.RealtimeProtection {
+	if !report.AntivirusEnabled || !report.RealtimeProtection {
 		score -= 30
 		report.Severity = models.SeverityCritical
 	}
@@ -267,6 +302,9 @@ if ($rebootPend) {
 	}
 	if !report.WindowsUpdateServiceOK {
 		score -= 20
+		if report.Severity == models.SeverityOK {
+			report.Severity = models.SeverityWarning
+		}
 	}
 
 	if score < 0 {
